@@ -1,10 +1,12 @@
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { SeededRNG } from './rng.ts';
 import { Money } from '../lib/money.ts';
 import { OrderBookEngine } from './orderbook.ts';
 import { OrderMatchingEngine } from './matching.ts';
 import { PortfolioEngine } from './portfolio.ts';
+import { PricingEngine } from './pricing.ts';
+import { MarketSimulationEngine } from './market.ts';
 import { COMPANIES, COMPANY_MAP } from '../data/companies.ts';
 
 test('Seeded RNG is strictly deterministic given the same seed', () => {
@@ -143,7 +145,6 @@ test('Margin cushion and forced liquidation trigger on maintenance breach', () =
 });
 
 test('PricingEngine per-symbol Poisson update rates and staggered phase offsets', () => {
-  const { PricingEngine } = require('./pricing.ts');
   const rng = new SeededRNG('TEST_POISSON_SEED');
   const pricing = new PricingEngine(rng, COMPANIES);
 
@@ -200,7 +201,6 @@ test('Watchlist price cell throttle cooldown scales properly with simulation spe
 });
 
 test('Simulation output is strictly reproducible for the same seed with the new cadence', () => {
-  const { MarketSimulationEngine } = require('./market.ts');
   const engine1 = new MarketSimulationEngine('CADENCE_REPRO_SEED', 100000);
   const engine2 = new MarketSimulationEngine('CADENCE_REPRO_SEED', 100000);
 

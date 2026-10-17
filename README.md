@@ -136,7 +136,7 @@ To add Forex, Crypto, ETFs, or Options in Phase 2:
   ```
 - **Execute Pure Engine Unit Tests**:
   ```bash
-  npx tsx --test src/engine/engine.test.ts
+  npm run test
   ```
 - **Production Build**:
   ```bash
