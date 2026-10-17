@@ -228,4 +228,28 @@ test('Simulation output is strictly reproducible for the same seed with the new 
   );
 });
 
+test('Engine state survives a JSON round trip and resumes identically', () => {
+  const priceRow = (e: MarketSimulationEngine) =>
+    e.getSnapshot().prices.map((p: any) => ({ ticker: p.ticker, price: p.price, volume: p.volume }));
+
+  const engine = new MarketSimulationEngine('SAVE_ROUND_TRIP', 100000);
+  for (let i = 0; i < 40; i++) engine.tick(100);
+
+  const exported = engine.exportState();
+  const wire = JSON.parse(JSON.stringify(exported)) as typeof exported;
+
+  const restored = new MarketSimulationEngine('SAVE_ROUND_TRIP', 100000);
+  restored.importState(wire);
+
+  assert.deepEqual(priceRow(restored), priceRow(engine), 'Restored engine must match the source immediately after import');
+
+  for (let i = 0; i < 40; i++) {
+    engine.tick(100);
+    restored.tick(100);
+  }
+
+  assert.deepEqual(priceRow(restored), priceRow(engine), 'Restored engine must keep producing the identical sequence');
+  assert.equal(restored.getSnapshot().riskMetrics.netLiquidationValue, engine.getSnapshot().riskMetrics.netLiquidationValue);
+});
+
 

@@ -37,6 +37,12 @@ export interface AssetPriceState {
   accumulatedSimSeconds: number; // aggregated sim seconds since last tick
 }
 
+export interface PricingEngineState {
+  regime: MarketRegime;
+  regimeDurationDays: number;
+  states: AssetPriceState[];
+}
+
 export class PricingEngine {
   private rng: SeededRNG;
   private factorModel: FactorCorrelationModel;
@@ -114,6 +120,38 @@ export class PricingEngine {
 
   getAllStates(): AssetPriceState[] {
     return Array.from(this.states.values());
+  }
+
+  exportState(): PricingEngineState {
+    return {
+      regime: this.regime,
+      regimeDurationDays: this.regimeDurationDays,
+      states: this.getAllStates().map((s) => ({
+        ...s,
+        candles1m: s.candles1m.map((c) => ({ ...c })),
+        candles5m: s.candles5m.map((c) => ({ ...c })),
+        candles15m: s.candles15m.map((c) => ({ ...c })),
+        candles1h: s.candles1h.map((c) => ({ ...c })),
+        candles1D: s.candles1D.map((c) => ({ ...c })),
+      })),
+    };
+  }
+
+  importState(state: PricingEngineState) {
+    this.regime = state.regime;
+    this.regimeDurationDays = state.regimeDurationDays;
+    const next = new Map<string, AssetPriceState>();
+    for (const s of state.states) {
+      next.set(s.ticker, {
+        ...s,
+        candles1m: s.candles1m.map((c) => ({ ...c })),
+        candles5m: s.candles5m.map((c) => ({ ...c })),
+        candles15m: s.candles15m.map((c) => ({ ...c })),
+        candles1h: s.candles1h.map((c) => ({ ...c })),
+        candles1D: s.candles1D.map((c) => ({ ...c })),
+      });
+    }
+    this.states = next;
   }
 
   getPriceMap(): Map<string, number> {

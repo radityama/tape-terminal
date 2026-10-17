@@ -42,6 +42,18 @@ export interface RiskMetrics {
   sectorExposures: SectorExposure[];
 }
 
+export interface PortfolioEngineState {
+  cash: string;
+  startingCapital: string;
+  positions: Position[];
+  tradeHistory: TradeRecord[];
+  marginUnlocked: boolean;
+  shortingUnlocked: boolean;
+  dayStartEquity: string;
+  peakEquity: string;
+  maxDrawdownPercent: number;
+}
+
 export class PortfolioEngine {
   private cash: Money;
   private startingCapital: Money;
@@ -66,6 +78,32 @@ export class PortfolioEngine {
     this.shortingUnlocked = shortingUnlocked;
     this.dayStartEquity = Money.from(startingBalance);
     this.peakEquity = Money.from(startingBalance);
+  }
+
+  exportState(): PortfolioEngineState {
+    return {
+      cash: this.cash.toString(),
+      startingCapital: this.startingCapital.toString(),
+      positions: this.getPositions().map((p) => ({ ...p })),
+      tradeHistory: this.tradeHistory.map((t) => ({ ...t })),
+      marginUnlocked: this.marginUnlocked,
+      shortingUnlocked: this.shortingUnlocked,
+      dayStartEquity: this.dayStartEquity.toString(),
+      peakEquity: this.peakEquity.toString(),
+      maxDrawdownPercent: this.maxDrawdownPercent,
+    };
+  }
+
+  importState(state: PortfolioEngineState) {
+    this.cash = Money.from(state.cash);
+    this.startingCapital = Money.from(state.startingCapital);
+    this.positions = new Map(state.positions.map((p) => [p.ticker, { ...p }]));
+    this.tradeHistory = state.tradeHistory.map((t) => ({ ...t }));
+    this.marginUnlocked = state.marginUnlocked;
+    this.shortingUnlocked = state.shortingUnlocked;
+    this.dayStartEquity = Money.from(state.dayStartEquity);
+    this.peakEquity = Money.from(state.peakEquity);
+    this.maxDrawdownPercent = state.maxDrawdownPercent;
   }
 
   getCash(): number {

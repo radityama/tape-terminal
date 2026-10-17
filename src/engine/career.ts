@@ -115,6 +115,14 @@ export const INITIAL_ACHIEVEMENTS: Achievement[] = [
   { id: 'short_seller', title: 'Bear Market Operator', description: 'Realize positive gains from an open short position.', unlocked: false },
 ];
 
+export interface CareerEngineState {
+  currentRankIndex: number;
+  reputation: number;
+  riskBreaches: number;
+  objectives: WeeklyObjective[];
+  achievements: Achievement[];
+}
+
 export class CareerEngine {
   private currentRankIndex: number = 0;
   private reputation: number = 0;
@@ -125,6 +133,24 @@ export class CareerEngine {
   constructor() {
     this.objectives = this.generateObjectivesForWeek(1);
     this.achievements = [...INITIAL_ACHIEVEMENTS];
+  }
+
+  exportState(): CareerEngineState {
+    return {
+      currentRankIndex: this.currentRankIndex,
+      reputation: this.reputation,
+      riskBreaches: this.riskBreaches,
+      objectives: this.objectives.map((o) => ({ ...o })),
+      achievements: this.achievements.map((a) => ({ ...a })),
+    };
+  }
+
+  importState(state: CareerEngineState) {
+    this.currentRankIndex = state.currentRankIndex;
+    this.reputation = state.reputation;
+    this.riskBreaches = state.riskBreaches;
+    this.objectives = state.objectives.map((o) => ({ ...o }));
+    this.achievements = state.achievements.map((a) => ({ ...a }));
   }
 
   getCurrentRank(): CareerRankDefinition {

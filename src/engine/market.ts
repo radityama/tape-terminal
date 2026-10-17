@@ -1,12 +1,12 @@
 import { COMPANIES, Company, COMPANY_MAP, Sector, SECTORS } from '../data/companies';
-import { CareerEngine } from './career';
+import { CareerEngine, CareerEngineState } from './career';
 import { MarketRegime } from './correlation';
 import { EventGenerator, MarketEvent } from './events';
 import { Order, OrderMatchingEngine, OrderSide, OrderType, TimeInForce, TradeRecord } from './matching';
 import { OrderBookDepth, OrderBookEngine } from './orderbook';
-import { PortfolioEngine, Position, RiskMetrics } from './portfolio';
-import { Candle, PricingEngine } from './pricing';
-import { RivalEngine, RivalTrader } from './rivals';
+import { PortfolioEngine, PortfolioEngineState, Position, RiskMetrics } from './portfolio';
+import { Candle, PricingEngine, PricingEngineState } from './pricing';
+import { RivalEngine, RivalTrader, RivalEngineState } from './rivals';
 import { SeededRNG } from './rng';
 
 export type SimSession = 'pre_market' | 'regular' | 'after_hours' | 'closed';
@@ -67,6 +67,22 @@ export interface MarketSnapshot {
     objectives: any[];
     achievements: any[];
   };
+}
+
+export interface MarketEngineState {
+  seed: string;
+  speed: number;
+  simDay: number;
+  simSecondsOfDay: number;
+  session: SimSession;
+  rngState: number;
+  pricing: PricingEngineState;
+  portfolio: PortfolioEngineState;
+  career: CareerEngineState;
+  rivals: RivalEngineState;
+  openOrders: Order[];
+  activeNews: MarketEvent[];
+  upcomingEarnings: MarketEvent[];
 }
 
 export class MarketSimulationEngine {
@@ -133,6 +149,50 @@ export class MarketSimulationEngine {
 
   getSpeed(): SimSpeed {
     return this.speed;
+  }
+
+  // Full state snapshot for persistence. Depth cache and EOD reports are derived and not stored.
+  exportState(): MarketEngineState {
+    return {
+      seed: this.seed,
+      speed: this.speed,
+      simDay: this.simDay,
+      simSecondsOfDay: this.simSecondsOfDay,
+      session: this.session,
+      rngState: this.rng.getState(),
+      pricing: this.pricingEngine.exportState(),
+      portfolio: this.portfolioEngine.exportState(),
+      career: this.careerEngine.exportState(),
+      rivals: this.rivalEngine.exportState(),
+      openOrders: Array.from(this.openOrders.values()).map((o) => ({ ...o })),
+      activeNews: this.activeNews.map((n) => ({ ...n })),
+      upcomingEarnings: this.upcomingEarnings.map((n) => ({ ...n })),
+    };
+  }
+
+  importState(state: MarketEngineState) {
+    this.seed = state.seed;
+    this.speed = state.speed as SimSpeed;
+    this.simDay = state.simDay;
+    this.simSecondsOfDay = state.simSecondsOfDay;
+    this.session = state.session;
+    this.pricingEngine.importState(state.pricing);
+    this.portfolioEngine.importState(state.portfolio);
+    this.careerEngine.importState(state.career);
+    this.rivalEngine.importState(state.rivals);
+    this.openOrders = new Map(state.openOrders.map((o) => [o.id, { ...o }]));
+    this.activeNews = state.activeNews.map((n) => ({ ...n }));
+    this.upcomingEarnings = state.upcomingEarnings.map((n) => ({ ...n }));
+    this.activeJumpDeltas.clear();
+    this.eodReports = [];
+    this.currentEodModal = null;
+    this.depthCache.clear();
+    for (const comp of this.companies) {
+      const s = this.pricingEngine.getState(comp.ticker);
+      if (s) this.depthCache.set(comp.ticker, this.bookEngine.generateDepth(comp, s.price, this.pricingEngine.getRegime()));
+    }
+    // Restore the RNG counter last: rebuilding the derived depth cache above consumes draws.
+    this.rng.setState(state.rngState);
   }
 
   setCallbacks(cbs: {
