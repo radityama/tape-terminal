@@ -1,0 +1,268 @@
+'use client';
+
+import React, { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { useTerminalStore } from '../src/store/useTerminalStore';
+import { COMPANIES } from '../src/data/companies';
+import { SCENARIOS, Scenario } from '../src/data/scenarios';
+import { listAllSaves, SavedGameState } from '../src/lib/storage';
+import { Play, CaretRight, Sliders, Gear, Sparkle, CaretUp, CaretDown, BookOpen } from '@phosphor-icons/react';
+
+export default function TitlePage() {
+  const router = useRouter();
+  const initEngine = useTerminalStore((s) => s.initEngine);
+  const startScenario = useTerminalStore((s) => s.startScenario);
+  const restartTutorial = useTerminalStore((s) => s.restartTutorial);
+
+  const [saves, setSaves] = useState<SavedGameState[]>([]);
+  const [selectedScenario, setSelectedScenario] = useState<Scenario | null>(null);
+  const [showScenarioModal, setShowScenarioModal] = useState(false);
+  const [seedInput, setSeedInput] = useState('TAPE_1337');
+  const [difficultySelect, setDifficultySelect] = useState<'learner' | 'standard' | 'hardcore'>('standard');
+
+  // Live preview ladder simulated locally for title screen right panel
+  const [ladderPrices, setLadderPrices] = useState(
+    COMPANIES.slice(0, 14).map((c) => ({
+      ticker: c.ticker,
+      name: c.name,
+      price: c.initialPrice,
+      chg: 0,
+    }))
+  );
+
+  useEffect(() => {
+    // Check for ?autostart=1
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('autostart') === '1') {
+        initEngine('TAPE_1337', 'career', 100000);
+        router.push('/terminal');
+        return;
+      }
+    }
+
+    listAllSaves().then(setSaves);
+
+    // Muted background tick loop for title screen price ladder
+    const interval = setInterval(() => {
+      setLadderPrices((prev) =>
+        prev.map((item) => {
+          const delta = (Math.random() - 0.49) * 0.15;
+          const newPrice = Math.max(1, Math.round((item.price + delta) * 100) / 100);
+          return {
+            ...item,
+            price: newPrice,
+            chg: Math.round(((newPrice - item.price) / item.price) * 1000) / 10,
+          };
+        })
+      );
+    }, 1500);
+
+    return () => clearInterval(interval);
+  }, [initEngine, router]);
+
+  const handleStartCareer = () => {
+    initEngine(seedInput || 'TAPE_1337', 'career', 100000);
+    // Trigger tutorial on first career start
+    useTerminalStore.getState().setDifficulty(difficultySelect);
+    useTerminalStore.getState().restartTutorial();
+    router.push('/terminal');
+  };
+
+  const handleContinue = (save: SavedGameState) => {
+    initEngine(save.seed, save.mode, save.equity);
+    router.push('/terminal');
+  };
+
+  const handleLaunchScenario = (sc: Scenario) => {
+    startScenario(sc);
+    setShowScenarioModal(false);
+    router.push('/terminal');
+  };
+
+  return (
+    <main className="min-h-[100dvh] w-full bg-[var(--bg-0)] text-[var(--text-1)] flex items-center justify-center p-6 select-none font-sans">
+      <div className="max-w-5xl w-full grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
+        {/* Left: Minimal Product & Career Launcher (7 cols) */}
+        <div className="lg:col-span-7 space-y-6">
+          <div className="space-y-2">
+            <div className="flex items-center space-x-2">
+              <span className="font-mono text-[11px] font-bold tracking-wider uppercase text-[var(--accent)] bg-[var(--bg-2)] border border-[var(--line)] px-2 py-0.5 rounded-[2px]">
+                STOCKS EDITION
+              </span>
+              <span className="text-[11px] font-mono text-[var(--text-3)]">
+                CLIENT-SIDE SIMULATION
+              </span>
+            </div>
+
+            <h1 className="text-4xl md:text-5xl font-extrabold tracking-tight font-mono text-[var(--text-1)]">
+              TAPE
+            </h1>
+
+            <p className="text-[14px] text-[var(--text-2)] leading-relaxed max-w-lg font-sans">
+              A professional trading terminal and market simulator. Trade 48 listed equities across 8 sectors with realistic spreads, depth ladder slippage, earnings shocks, and macroeconomic rate decisions.
+            </p>
+          </div>
+
+          {/* New Game Setup Controls */}
+          <div className="bg-[var(--bg-1)] p-4 border border-[var(--line)] rounded-[2px] space-y-3 font-mono text-[12px] max-w-md">
+            <div>
+              <label className="text-[10px] uppercase text-[var(--text-3)] block mb-1">
+                Universe Seed
+              </label>
+              <input
+                type="text"
+                value={seedInput}
+                onChange={(e) => setSeedInput(e.target.value)}
+                placeholder="TAPE_1337"
+                className="w-full bg-[var(--bg-0)] border border-[var(--line)] rounded-[2px] px-2.5 py-1 text-[12px] text-[var(--text-1)] outline-none focus:border-[var(--accent)]"
+              />
+            </div>
+
+            <div>
+              <label className="text-[10px] uppercase text-[var(--text-3)] block mb-1">
+                Difficulty Preset
+              </label>
+              <div className="grid grid-cols-3 gap-1">
+                {(['learner', 'standard', 'hardcore'] as const).map((d) => (
+                  <button
+                    key={d}
+                    onClick={() => setDifficultySelect(d)}
+                    className={`py-1 text-center capitalize rounded-[2px] border text-[11px] cursor-pointer transition-colors ${
+                      difficultySelect === d
+                        ? 'bg-[var(--accent)] text-black font-semibold border-[var(--accent)]'
+                        : 'bg-[var(--bg-0)] text-[var(--text-3)] border-[var(--line)] hover:text-[var(--text-1)]'
+                    }`}
+                  >
+                    {d}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Launch Buttons */}
+            <div className="pt-2 flex flex-col space-y-2">
+              <button
+                onClick={handleStartCareer}
+                className="w-full py-2.5 bg-[var(--accent)] hover:brightness-105 active:translate-y-[1px] text-black font-bold text-[13px] rounded-[2px] flex items-center justify-center space-x-2 cursor-pointer transition-all"
+              >
+                <span>Start New Career ($100k)</span>
+                <CaretRight size={14} weight="bold" />
+              </button>
+
+              <button
+                onClick={() => setShowScenarioModal(true)}
+                className="w-full py-2 bg-[var(--bg-2)] hover:bg-[var(--line)] text-[var(--text-2)] hover:text-[var(--text-1)] font-semibold text-[12px] rounded-[2px] flex items-center justify-center space-x-2 border border-[var(--line)] cursor-pointer"
+              >
+                <span>Historical Scenarios (Sandbox)</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Continue Save Slots if available */}
+          {saves.length > 0 && (
+            <div className="max-w-md space-y-2 font-mono text-[11px]">
+              <div className="text-[10px] uppercase text-[var(--text-3)]">
+                Existing Save Slots
+              </div>
+              <div className="space-y-1">
+                {saves.slice(0, 2).map((s) => (
+                  <button
+                    key={s.id}
+                    onClick={() => handleContinue(s)}
+                    className="w-full p-2 bg-[var(--bg-1)] hover:bg-[var(--bg-2)] border border-[var(--line)] rounded-[2px] flex items-center justify-between text-left cursor-pointer transition-colors"
+                  >
+                    <div>
+                      <div className="font-semibold text-[var(--text-1)]">{s.name}</div>
+                      <div className="text-[10px] text-[var(--text-3)]">
+                        Day {s.simDay} | Net Equity ${s.equity.toLocaleString()}
+                      </div>
+                    </div>
+                    <span className="text-[var(--accent)] text-[10px]">Resume &rarr;</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Right: Live Simulated Price Ladder (5 cols) */}
+        <div className="lg:col-span-5 bg-[var(--bg-1)] border border-[var(--line)] rounded-[2px] p-3 shadow-2xl font-mono text-[11px]">
+          <div className="flex justify-between items-center border-b border-[var(--line)] pb-2 mb-2">
+            <span className="text-[10px] uppercase text-[var(--text-3)] tracking-wider">
+              Market Depth Tape (Live Tick)
+            </span>
+            <span className="text-[10px] text-[var(--up)] flex items-center space-x-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-[var(--up)]" />
+              <span>SYNCHRONIZED</span>
+            </span>
+          </div>
+
+          <div className="divide-y divide-[var(--line)]">
+            {ladderPrices.map((row) => (
+              <div key={row.ticker} className="py-1.5 flex items-center justify-between">
+                <div>
+                  <span className="font-bold text-[var(--text-1)]">{row.ticker}</span>
+                  <span className="text-[10px] text-[var(--text-3)] pl-2 truncate">{row.name}</span>
+                </div>
+                <div className="flex items-center space-x-3 text-right">
+                  <span className="font-semibold text-[var(--text-1)]">${row.price.toFixed(2)}</span>
+                  <span className={`text-[10px] flex items-center ${row.chg >= 0 ? 'text-[var(--up)]' : 'text-[var(--down)]'}`}>
+                    {row.chg >= 0 ? <CaretUp weight="bold" size={9} /> : <CaretDown weight="bold" size={9} />}
+                    {row.chg >= 0 ? '+' : ''}{row.chg.toFixed(2)}%
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-3 pt-2 border-t border-[var(--line)] text-[10px] text-[var(--text-3)] text-center">
+            Bloomberg-lineage density. 48 equities across 8 sectors.
+          </div>
+        </div>
+      </div>
+
+      {/* Scenarios Modal */}
+      {showScenarioModal && (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4 font-sans select-none">
+          <div className="bg-[var(--bg-1)] border border-[var(--line-strong)] rounded-[2px] max-w-xl w-full p-4 space-y-3 font-mono text-[11px] shadow-2xl">
+            <div className="flex justify-between items-center border-b border-[var(--line)] pb-2">
+              <span className="font-bold text-[13px] text-[var(--text-1)]">
+                Hand-Authored Historical Scenarios
+              </span>
+              <button
+                onClick={() => setShowScenarioModal(false)}
+                className="text-[var(--text-3)] hover:text-[var(--text-1)] cursor-pointer"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="space-y-2 max-h-96 overflow-y-auto">
+              {SCENARIOS.map((sc) => (
+                <div
+                  key={sc.id}
+                  onClick={() => handleLaunchScenario(sc)}
+                  className="p-3 bg-[var(--bg-0)] hover:bg-[var(--bg-2)] border border-[var(--line)] rounded-[2px] cursor-pointer transition-colors space-y-1.5"
+                >
+                  <div className="flex justify-between items-center">
+                    <span className="font-bold text-[12px] text-[var(--accent)]">{sc.title}</span>
+                    <span className="text-[10px] text-[var(--text-3)] uppercase">{sc.durationDays} Days | Initial {sc.initialRegime}</span>
+                  </div>
+                  <p className="text-[11px] text-[var(--text-2)] font-sans leading-relaxed">
+                    {sc.briefing}
+                  </p>
+                  <div className="text-[10px] text-[var(--text-3)] flex items-center space-x-2 pt-1 border-t border-[var(--line)]">
+                    <span>Key Tickers: {sc.featuredTickers.join(', ')}</span>
+                    <span>|</span>
+                    <span>Target: +${sc.targetProfit.toLocaleString()}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </main>
+  );
+}

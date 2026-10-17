@@ -1,0 +1,95 @@
+@import "tailwindcss";
+
+:root {
+  --bg-0: #0A0B0D;
+  --bg-1: #0F1114;
+  --bg-2: #15181C;
+  --line: #22272D;
+  --line-strong: #2F363E;
+  --text-1: #E4E7EB;
+  --text-2: #98A0A9;
+  --text-3: #5E6670;
+  --accent: #E0A03A;
+  --up: #3DB070;
+  --down: #E5534B;
+}
+
+body {
+  background-color: var(--bg-0);
+  color: var(--text-1);
+  font-family: var(--font-sans, system-ui, sans-serif);
+  overflow-x: hidden;
+}
+
+/* Custom scrollbars for dense terminal panels */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg-1);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: 2px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-3);
+}
+
+/* Tabular figures for all financial mono elements */
+.font-mono {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Calm price cell flash overlay fade: 700ms cubic-bezier(0.16, 1, 0.3, 1) opacity animation */
+@keyframes cell-flash-fade {
+  0% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+.cell-flash-active {
+  animation: cell-flash-fade 700ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cell-flash-active {
+    animation: none !important;
+    opacity: 0 !important;
+  }
+}
+
+/* Tactile button push */
+button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+/* Resizable panel gutter styles */
+[data-panel-group-direction="horizontal"] > [data-panel-resize-handle-enabled] {
+  width: 3px;
+  background-color: var(--line);
+  transition: background-color 150ms ease;
+  cursor: col-resize;
+  position: relative;
+  z-index: 10;
+}
+
+[data-panel-group-direction="horizontal"] > [data-panel-resize-handle-enabled]:hover,
+[data-panel-group-direction="horizontal"] > [data-panel-resize-handle-enabled][data-resize-handle-active] {
+  background-color: var(--accent);
+}
+
+[data-panel-group-direction="vertical"] > [data-panel-resize-handle-enabled] {
+  height: 3px;
+  background-color: var(--line);
+  transition: background-color 150ms ease;
+  cursor: row-resize;
+  position: relative;
+  z-index: 10;
+}
+
+[data-panel-group-direction="vertical"] > [data-panel-resize-handle-enabled]:hover,
+[data-panel-group-direction="vertical"] > [data-panel-resize-handle-enabled][data-resize-handle-active] {
+  background-color: var(--accent);
+}

@@ -1,0 +1,6 @@
+{
+  "name": "TAPE: Stock Trading Terminal & Simulation Game",
+  "description": "Professional browser-based stock trading game and financial terminal with realistic market microstructure, 48 equities across 8 sectors, macroeconomic events, and career progression.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
