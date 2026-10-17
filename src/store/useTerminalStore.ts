@@ -2,8 +2,9 @@ import { create } from 'zustand';
 import { COMPANY_MAP } from '../data/companies';
 import { MarketSimulationEngine, MarketSnapshot, SimSpeed } from '../engine/market';
 import { OrderSide, OrderType, TimeInForce } from '../engine/matching';
-import { Scenario } from '../data/scenarios';
-import { saveGameSlot } from '../lib/storage';
+import { Scenario, SCENARIOS } from '../data/scenarios';
+import { saveManager, SaveStatus } from '../saves/manager';
+import { SaveGame } from '../saves/schema';
 
 export type BottomTab = 'positions' | 'orders' | 'blotter' | 'risk' | 'calendar' | 'leaderboard';
 export type WorkspaceLayout = 'trade' | 'research' | 'risk';
@@ -80,8 +81,12 @@ export interface TerminalState {
   // Live Snapshot
   snapshot: MarketSnapshot | null;
 
+  // Save state
+  saveStatus: SaveStatus;
+
   // Actions
   initEngine: (seed?: string, mode?: 'career' | 'sandbox', startingBalance?: number) => void;
+  restoreFromSave: (save: SaveGame) => void;
   setSnapshot: (snapshot: MarketSnapshot) => void;
   setSelectedTicker: (ticker: string) => void;
   setSelectedTimeframe: (tf: ChartTimeframe) => void;
@@ -165,63 +170,36 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
   priceAlerts: [],
   snapshot: null,
 
+  saveStatus: 'saved_locally',
+
   initEngine: (seed = 'TAPE_1337', mode = 'career', startingBalance = 100000) => {
     const engine = new MarketSimulationEngine(seed, startingBalance);
-
-    engine.setCallbacks({
-      onSnapshot: (snap) => {
-        get().setSnapshot(snap);
-      },
-      onTradeFill: (trade) => {
-        get().addToast({
-          title: 'Order Executed',
-          message: `${trade.side.toUpperCase()} ${trade.shares} ${trade.ticker} @ $${trade.price.toFixed(2)}`,
-          type: 'success',
-        });
-
-        // If tutorial step is on guided first trade (step 6), advance!
-        const state = get();
-        if (state.tutorialActive && state.tutorialStep === 6) {
-          state.nextTutorialStep();
-        }
-      },
-      onMarginCall: (explanation) => {
-        get().addToast({
-          title: 'Margin Call Forced Liquidation',
-          message: explanation,
-          type: 'error',
-        });
-      },
-      onAchievement: (ach) => {
-        get().addToast({
-          title: `Achievement Unlocked: ${ach.title}`,
-          message: ach.description,
-          type: 'info',
-        });
-      },
-    });
-
+    wireEngine(engine, get);
     const initialSnap = engine.getSnapshot();
-    const initialMap: Record<string, PriceQuote> = {};
-    for (const p of initialSnap.prices) {
-      initialMap[p.ticker] = {
-        ticker: p.ticker,
-        price: Math.round(p.price * 100) / 100,
-        rawPrice: p.price,
-        change: p.change,
-        changePercent: p.changePercent,
-        volume: p.volume,
-        direction: p.direction,
-        lastMoveDirection: p.lastMoveDirection || (p.change >= 0 ? 'up' : 'down'),
-        high: p.high,
-        low: p.low,
-        vwap: p.vwap,
-      };
-    }
-    set({ engine, seed, mode, snapshot: initialSnap, pricesByTicker: initialMap });
+    set({ engine, seed, mode, snapshot: initialSnap, pricesByTicker: buildPriceMap(initialSnap) });
+  },
+
+  restoreFromSave: (save) => {
+    const engine = new MarketSimulationEngine(save.seed, 100000);
+    engine.importState(save.game);
+    wireEngine(engine, get);
+    const snapshot = engine.getSnapshot();
+    const scenario = save.scenarioId ? (SCENARIOS.find((s) => s.id === save.scenarioId) ?? null) : null;
+    set({
+      engine,
+      seed: save.seed,
+      mode: save.mode,
+      activeScenario: scenario,
+      activeModal: 'none',
+      snapshot,
+      pricesByTicker: buildPriceMap(snapshot),
+    });
   },
 
   setSnapshot: (snapshot) => {
+    const prevDay = get().snapshot?.simDay;
+    if (prevDay !== undefined && snapshot.simDay !== prevDay) saveManager.noteSimDay();
+
     const prevMap = get().pricesByTicker;
     let mapChanged = false;
     const newMap: Record<string, PriceQuote> = { ...prevMap };
@@ -293,6 +271,7 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
     if (engine) {
       engine.setSpeed(speed);
       set({ snapshot: engine.getSnapshot() });
+      if (speed === 0) saveManager.notePause();
     }
   },
 
@@ -409,3 +388,83 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
     }
   },
 }));
+
+function quoteFrom(p: MarketSnapshot['prices'][number]): PriceQuote {
+  return {
+    ticker: p.ticker,
+    price: Math.round(p.price * 100) / 100,
+    rawPrice: p.price,
+    change: p.change,
+    changePercent: p.changePercent,
+    volume: p.volume,
+    direction: p.direction,
+    lastMoveDirection: p.lastMoveDirection || (p.change >= 0 ? 'up' : 'down'),
+    high: p.high,
+    low: p.low,
+    vwap: p.vwap,
+  };
+}
+
+function buildPriceMap(snapshot: MarketSnapshot): Record<string, PriceQuote> {
+  const map: Record<string, PriceQuote> = {};
+  for (const p of snapshot.prices) map[p.ticker] = quoteFrom(p);
+  return map;
+}
+
+function wireEngine(engine: MarketSimulationEngine, get: () => TerminalState) {
+  engine.setCallbacks({
+    onSnapshot: (snap) => {
+      get().setSnapshot(snap);
+    },
+    onTradeFill: (trade) => {
+      get().addToast({
+        title: 'Order Executed',
+        message: `${trade.side.toUpperCase()} ${trade.shares} ${trade.ticker} @ $${trade.price.toFixed(2)}`,
+        type: 'success',
+      });
+
+      const state = get();
+      if (state.tutorialActive && state.tutorialStep === 6) {
+        state.nextTutorialStep();
+      }
+    },
+    onMarginCall: (explanation) => {
+      get().addToast({
+        title: 'Margin Call Forced Liquidation',
+        message: explanation,
+        type: 'error',
+      });
+    },
+    onAchievement: (ach) => {
+      get().addToast({
+        title: `Achievement Unlocked: ${ach.title}`,
+        message: ach.description,
+        type: 'info',
+      });
+    },
+  });
+}
+
+// The store is the only thing that touches the engine; the SaveManager only ever sees plain save data.
+saveManager.init({
+  capture: (slot) => {
+    const state = useTerminalStore.getState();
+    if (!state.engine) return null;
+    const snap = state.snapshot ?? state.engine.getSnapshot();
+    const career = snap.career as { rank?: { name?: string } } | undefined;
+    return {
+      name: state.activeScenario?.title ?? (state.mode === 'career' ? `Career ${slot}` : `Sandbox ${slot}`),
+      seed: state.seed,
+      mode: state.mode,
+      scenarioId: state.activeScenario?.id ?? null,
+      summary: {
+        rank: career?.rank?.name ?? null,
+        equity: snap.riskMetrics.netLiquidationValue,
+        simDay: snap.simDay,
+      },
+      game: state.engine.exportState(),
+    };
+  },
+  restore: (save) => useTerminalStore.getState().restoreFromSave(save),
+  onStatus: (status) => useTerminalStore.setState({ saveStatus: status }),
+});

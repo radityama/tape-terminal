@@ -11,6 +11,7 @@ import { EndOfDayModal } from '../../../src/features/eod-report/EndOfDayModal';
 import { SettingsModal } from '../../../src/features/settings/SettingsModal';
 import { SpotlightTutorial } from '../../../src/features/tutorial/SpotlightTutorial';
 import { ToastContainer } from '../../../src/features/toasts/ToastContainer';
+import { saveManager } from '../../../src/saves/manager';
 
 export default function TerminalPage() {
   const engine = useTerminalStore((s) => s.engine);
@@ -61,6 +62,23 @@ export default function TerminalPage() {
 
     return () => clearInterval(interval);
   }, [setSnapshot]);
+
+  // Autosave: every 60 seconds while a game is live, and as soon as the tab is hidden.
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (useTerminalStore.getState().engine) saveManager.noteDirty(0);
+    }, 60000);
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') void saveManager.flush();
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, []);
 
   // Global hotkeys (Space to toggle pause)
   useEffect(() => {

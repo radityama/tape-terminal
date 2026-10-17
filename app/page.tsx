@@ -5,7 +5,8 @@ import { useRouter } from 'next/navigation';
 import { useTerminalStore } from '../src/store/useTerminalStore';
 import { COMPANIES } from '../src/data/companies';
 import { SCENARIOS, Scenario } from '../src/data/scenarios';
-import { listAllSaves, SavedGameState } from '../src/lib/storage';
+import { saveManager } from '../src/saves/manager';
+import { SaveMeta } from '../src/saves/schema';
 import { Play, CaretRight, Sliders, Gear, Sparkle, CaretUp, CaretDown, BookOpen } from '@phosphor-icons/react';
 
 export default function TitlePage() {
@@ -14,7 +15,7 @@ export default function TitlePage() {
   const startScenario = useTerminalStore((s) => s.startScenario);
   const restartTutorial = useTerminalStore((s) => s.restartTutorial);
 
-  const [saves, setSaves] = useState<SavedGameState[]>([]);
+  const [saves, setSaves] = useState<SaveMeta[]>([]);
   const [selectedScenario, setSelectedScenario] = useState<Scenario | null>(null);
   const [showScenarioModal, setShowScenarioModal] = useState(false);
   const [seedInput, setSeedInput] = useState('TAPE_1337');
@@ -41,7 +42,7 @@ export default function TitlePage() {
       }
     }
 
-    listAllSaves().then(setSaves);
+    saveManager.listSlots().then(setSaves);
 
     // Muted background tick loop for title screen price ladder
     const interval = setInterval(() => {
@@ -69,9 +70,9 @@ export default function TitlePage() {
     router.push('/terminal');
   };
 
-  const handleContinue = (save: SavedGameState) => {
-    initEngine(save.seed, save.mode, save.equity);
-    router.push('/terminal');
+  const handleContinue = async (save: SaveMeta) => {
+    const outcome = await saveManager.load(save.slot);
+    if (outcome.ok) router.push('/terminal');
   };
 
   const handleLaunchScenario = (sc: Scenario) => {
@@ -168,7 +169,7 @@ export default function TitlePage() {
               <div className="space-y-1">
                 {saves.slice(0, 2).map((s) => (
                   <button
-                    key={s.id}
+                    key={s.slot}
                     onClick={() => handleContinue(s)}
                     className="w-full p-2 bg-[var(--bg-1)] hover:bg-[var(--bg-2)] border border-[var(--line)] rounded-[2px] flex items-center justify-between text-left cursor-pointer transition-colors"
                   >
