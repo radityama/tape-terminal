@@ -181,7 +181,7 @@ psql -X -v ON_ERROR_STOP=1 "$DATABASE_URL" -f supabase/tests/rls_saves.sql
 Magic links need SMTP. On a self-hosted Supabase auth service:
 
 - Configure SMTP (host, port, user, password, sender) so auth emails send. Magic links do not work without it.
-- Set the Site URL to your deployed origin, and add Redirect URLs for `http://localhost:3000` and your production origin.
+- Set the Site URL to your deployed origin, and add Redirect URLs for `http://localhost:3000/auth/callback` and `https://your-origin/auth/callback`. Magic links and OAuth both return through `app/auth/callback/route.ts`, which exchanges the code and forwards to `/terminal`.
 - Enable the GitHub and Google providers and paste their client IDs and secrets.
 
 ### Session refresh

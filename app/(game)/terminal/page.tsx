@@ -110,6 +110,15 @@ export default function TerminalPage() {
   // Auth: restore the Supabase session once on mount (no-op when not configured).
   useEffect(() => {
     useAuthStore.getState().init();
+    // The callback route forwards failures here, so the sign-in dialog can explain them.
+    const params = new URLSearchParams(window.location.search);
+    const authError = params.get('auth_error');
+    if (authError) {
+      useAuthStore.getState().reportAuthError(authError);
+      params.delete('auth_error');
+      const query = params.toString();
+      window.history.replaceState(null, '', `${window.location.pathname}${query ? `?${query}` : ''}`);
+    }
   }, []);
 
   return (

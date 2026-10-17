@@ -28,6 +28,7 @@ interface AuthState {
   openDialog: (dialog: AuthDialog) => void;
   closeDialog: () => void;
   clearError: () => void;
+  reportAuthError: (message: string) => void;
   signInWithMagicLink: (email: string) => Promise<void>;
   resendMagicLink: () => Promise<void>;
   signInWithOAuth: (provider: 'github' | 'google') => Promise<void>;
@@ -65,6 +66,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
     client = createBrowserSupabase();
     if (!client) {
+      if (process.env.NODE_ENV === 'development') {
+        console.warn('Supabase auth is not configured; running as a guest.');
+      }
       set({ configured: false, ready: true });
       return;
     }
@@ -96,6 +100,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   openDialog: (dialog) => set({ dialog, error: null }),
   closeDialog: () => set({ dialog: 'none', conflict: null }),
   clearError: () => set({ error: null }),
+  reportAuthError: (message) => set({ dialog: 'signin', error: message, loading: false }),
 
   signInWithMagicLink: async (email) => {
     const trimmed = email.trim();
@@ -107,7 +112,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     set({ loading: true, error: null });
     const { error } = await client.auth.signInWithOtp({
       email: trimmed,
-      options: { emailRedirectTo: window.location.origin },
+      options: { emailRedirectTo: `${window.location.origin}/auth/callback?next=/terminal` },
     });
     if (error) {
       set({ loading: false, error: error.message });
@@ -128,7 +133,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     set({ loading: true, error: null });
     const { error } = await client.auth.signInWithOAuth({
       provider,
-      options: { redirectTo: `${window.location.origin}/terminal` },
+      options: { redirectTo: `${window.location.origin}/auth/callback?next=/terminal` },
     });
     if (error) set({ loading: false, error: error.message });
   },

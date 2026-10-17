@@ -7,6 +7,7 @@ import { COMPANIES } from '../src/data/companies';
 import { SCENARIOS, Scenario } from '../src/data/scenarios';
 import { saveManager, MergedSlot } from '../src/saves/manager';
 import { useAuthStore } from '../src/store/useAuthStore';
+import { AuthDialogs } from '../src/features/auth/AuthDialogs';
 import { Play, CaretRight, Sliders, Gear, Sparkle, CaretUp, CaretDown, BookOpen } from '@phosphor-icons/react';
 
 export default function TitlePage() {
@@ -15,7 +16,9 @@ export default function TitlePage() {
   const startScenario = useTerminalStore((s) => s.startScenario);
   const restartTutorial = useTerminalStore((s) => s.restartTutorial);
   const authConfigured = useAuthStore((s) => s.configured);
+  const authReady = useAuthStore((s) => s.ready);
   const authSignedIn = useAuthStore((s) => s.signedIn);
+  const authUser = useAuthStore((s) => s.user);
   const openAuthDialog = useAuthStore((s) => s.openDialog);
 
   const [slots, setSlots] = useState<MergedSlot[]>([]);
@@ -46,14 +49,6 @@ export default function TitlePage() {
       }
     }
 
-    void saveManager.listAllSlots().then(async (list) => {
-      setSlots(list);
-      const withHistory = await Promise.all(
-        list.map((slot) => saveManager.hasHistory(slot.slot).then((has) => (has ? slot.slot : null)))
-      );
-      setHistorySlots(withHistory.filter((slot): slot is number => slot !== null));
-    });
-
     // Muted background tick loop for title screen price ladder
     const interval = setInterval(() => {
       setLadderPrices((prev) =>
@@ -71,6 +66,22 @@ export default function TitlePage() {
 
     return () => clearInterval(interval);
   }, [initEngine, router]);
+
+  // Resolve the account before showing cloud slots, so the list never jumps from local to cloud.
+  useEffect(() => {
+    useAuthStore.getState().init();
+  }, []);
+
+  useEffect(() => {
+    if (authConfigured && !authReady) return;
+    void saveManager.listAllSlots().then(async (list) => {
+      setSlots(list);
+      const withHistory = await Promise.all(
+        list.map((slot) => saveManager.hasHistory(slot.slot).then((has) => (has ? slot.slot : null)))
+      );
+      setHistorySlots(withHistory.filter((slot): slot is number => slot !== null));
+    });
+  }, [authConfigured, authReady, authSignedIn]);
 
   const handleStartCareer = () => {
     const slot = saveManager.getActiveSlot();
@@ -103,7 +114,28 @@ export default function TitlePage() {
   };
 
   return (
-    <main className="min-h-[100dvh] w-full bg-[var(--bg-0)] text-[var(--text-1)] flex items-center justify-center p-6 select-none font-sans">
+    <main className="relative min-h-[100dvh] w-full bg-[var(--bg-0)] text-[var(--text-1)] flex items-center justify-center p-6 select-none font-sans">
+      {authConfigured && (
+        <div className="absolute top-6 right-6 font-mono text-[11px]">
+          {!authReady ? (
+            <span className="text-[var(--text-3)]">Checking account...</span>
+          ) : authSignedIn ? (
+            <button
+              onClick={() => openAuthDialog('account')}
+              className="text-[var(--text-2)] hover:text-[var(--text-1)] cursor-pointer"
+            >
+              {authUser?.email ?? 'Account'}
+            </button>
+          ) : (
+            <button
+              onClick={() => openAuthDialog('signin')}
+              className="text-[var(--accent)] hover:underline cursor-pointer"
+            >
+              Sign in
+            </button>
+          )}
+        </div>
+      )}
       <div className="max-w-5xl w-full grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
         {/* Left: Minimal Product & Career Launcher (7 cols) */}
         <div className="lg:col-span-7 space-y-6">
@@ -182,7 +214,18 @@ export default function TitlePage() {
           </div>
 
           {/* Continue Save Slots if available */}
-          {slots.length > 0 && (
+          {authConfigured && !authReady ? (
+            <div className="max-w-md space-y-2 font-mono text-[11px]" aria-busy="true">
+              <div className="text-[10px] uppercase text-[var(--text-3)]">
+                Existing Save Slots
+              </div>
+              <div className="w-full p-2 bg-[var(--bg-1)] border border-[var(--line)] rounded-[2px]">
+                <div className="h-3 w-32 bg-[var(--line)] rounded-[2px] animate-pulse" />
+                <div className="h-2 w-48 bg-[var(--line)] rounded-[2px] mt-2 animate-pulse" />
+                <div className="text-[10px] text-[var(--text-3)] mt-2">Checking account...</div>
+              </div>
+            </div>
+          ) : slots.length > 0 ? (
             <div className="max-w-md space-y-2 font-mono text-[11px]">
               <div className="text-[10px] uppercase text-[var(--text-3)]">
                 Existing Save Slots
@@ -229,16 +272,7 @@ export default function TitlePage() {
                 ))}
               </div>
             </div>
-          )}
-
-          {authConfigured && !authSignedIn && (
-            <button
-              onClick={() => openAuthDialog('signin')}
-              className="text-[11px] text-[var(--accent)] hover:underline cursor-pointer font-mono"
-            >
-              Sign in to sync saves across devices
-            </button>
-          )}
+          ) : null}
         </div>
 
         {/* Right: Live Simulated Price Ladder (5 cols) */}
@@ -318,6 +352,8 @@ export default function TitlePage() {
           </div>
         </div>
       )}
+
+      <AuthDialogs />
     </main>
   );
 }

@@ -428,3 +428,24 @@ test('an oversized profile is not pushed to the cloud', async () => {
 
   assert.equal(fake.puts.length, 0, 'a profile over the size limit must stay local');
 });
+
+test('a reload right after a fill restores the trade from local storage', async () => {
+  captured = captureFor(1, 1, 0, 'live-engine');
+  await saveManager.bindSession(1, 'live-engine');
+  saveManager.markSessionReady();
+  await saveManager.save(1);
+
+  // The fill lands: the local write happens immediately, without waiting for autosave.
+  captured = captureFor(2, 1, 1, 'live-engine');
+  saveManager.notePlayerAction();
+  await saveManager.flush();
+
+  // A reload drops the in-memory engine; the next session loads the slot from disk.
+  saveManager.endSession();
+  restored.length = 0;
+  const outcome = await saveManager.load(1);
+
+  assert.equal(outcome.ok, true);
+  assert.equal(restored.length, 1);
+  assert.equal(restored[0].game.portfolio.positions.length, 1, 'the filled position survives a reload');
+});
