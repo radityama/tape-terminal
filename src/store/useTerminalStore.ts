@@ -4,7 +4,7 @@ import { MarketSimulationEngine, MarketSnapshot, SimSpeed } from '../engine/mark
 import { OrderSide, OrderType, TimeInForce } from '../engine/matching';
 import { Scenario, SCENARIOS } from '../data/scenarios';
 import { saveManager, SaveStatus } from '../saves/manager';
-import { SaveGame } from '../saves/schema';
+import { Profile, SaveGame } from '../saves/schema';
 
 export type BottomTab = 'positions' | 'orders' | 'blotter' | 'risk' | 'calendar' | 'leaderboard';
 export type WorkspaceLayout = 'trade' | 'research' | 'risk';
@@ -106,6 +106,8 @@ export interface TerminalState {
   toggleTapeStrip: () => void;
   setPriceFlashSetting: (setting: 'off' | 'subtle' | 'full') => void;
   setDifficulty: (diff: 'learner' | 'standard' | 'hardcore') => void;
+  // Apply a cloud profile that won the last-write-wins comparison.
+  applyProfile: (profile: Profile) => void;
   startScenario: (scenario: Scenario) => void;
 
   // Tutorial actions
@@ -315,6 +317,23 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
   setPriceFlashSetting: (setting) => set({ priceFlashSetting: setting }),
   setDifficulty: (diff) => set({ difficulty: diff }),
 
+  applyProfile: (profile) => {
+    const settings = profile.settings;
+    set((state) => ({
+      difficulty: settings.difficulty,
+      soundEnabled: settings.soundEnabled,
+      tapeStripEnabled: settings.tapeStripEnabled,
+      priceFlashSetting: ['off', 'subtle', 'full'].includes(settings.priceFlashSetting)
+        ? (settings.priceFlashSetting as 'off' | 'subtle' | 'full')
+        : state.priceFlashSetting,
+      selectedTimeframe: settings.selectedTimeframe,
+      activeWorkspaceLayout: settings.activeWorkspaceLayout,
+      chartIndicators: { ...settings.chartIndicators },
+      tutorialStep: profile.tutorial.step,
+      tutorialCompleted: profile.tutorial.completed,
+    }));
+  },
+
   startScenario: (scenario) => {
     get().initEngine(scenario.seed, 'sandbox', 100000);
     const { engine } = get();
@@ -517,4 +536,53 @@ saveManager.init({
   onStatus: (status) => useTerminalStore.setState({ saveStatus: status }),
   onNotice: (message) =>
     useTerminalStore.getState().addToast({ title: 'Save repaired', message, type: 'warning' }),
+  captureProfile: () => {
+    const state = useTerminalStore.getState();
+    return {
+      schemaVersion: 1,
+      settings: {
+        difficulty: state.difficulty,
+        soundEnabled: state.soundEnabled,
+        tapeStripEnabled: state.tapeStripEnabled,
+        priceFlashSetting: state.priceFlashSetting,
+        selectedTimeframe: state.selectedTimeframe,
+        activeWorkspaceLayout: state.activeWorkspaceLayout,
+        chartIndicators: { ...state.chartIndicators },
+      },
+      tutorial: { completed: state.tutorialCompleted, step: state.tutorialStep },
+      layouts: {},
+      updatedAt: Date.now(),
+    };
+  },
+  applyProfile: (profile) => {
+    applyingRemoteProfile = true;
+    try {
+      useTerminalStore.getState().applyProfile(profile);
+    } finally {
+      applyingRemoteProfile = false;
+    }
+  },
+});
+
+// Profile fields that live in the cloud blob. Any change writes local at once and
+// pushes to the cloud debounced through the save manager.
+const PROFILE_KEYS = [
+  'difficulty',
+  'soundEnabled',
+  'tapeStripEnabled',
+  'priceFlashSetting',
+  'selectedTimeframe',
+  'activeWorkspaceLayout',
+  'chartIndicators',
+  'tutorialStep',
+  'tutorialCompleted',
+] as const;
+
+let applyingRemoteProfile = false;
+
+useTerminalStore.subscribe((state, previous) => {
+  if (applyingRemoteProfile) return;
+  if (PROFILE_KEYS.some((key) => state[key] !== previous[key])) {
+    void saveManager.noteProfileChange();
+  }
 });

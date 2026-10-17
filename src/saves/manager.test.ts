@@ -2,17 +2,17 @@ import 'fake-indexeddb/auto';
 import { beforeEach, test, expect } from 'vitest';
 import assert from 'node:assert/strict';
 import { MarketSimulationEngine } from '../engine/market';
-import { db, LocalSaveStore } from './localStore';
+import { db, LocalSaveStore, readProfile, writeProfile } from './localStore';
 import { saveManager, CaptureFields, SyncConflict, SaveStatus } from './manager';
-import { SaveGame, SCHEMA_VERSION } from './schema';
+import { Profile, ProfileSchema, SaveGame, SCHEMA_VERSION } from './schema';
 
 type CloudApi = {
   list: () => Promise<unknown[]>;
   get: () => Promise<unknown>;
   getMeta: () => Promise<unknown>;
   put: (save: SaveGame, opts?: { expectedRevision?: number }) => Promise<{ ok: boolean; reason?: string; revision?: number }>;
-  getProfile: () => Promise<null>;
-  putProfile: () => Promise<void>;
+  getProfile: () => Promise<{ data: unknown; updatedAt: number } | null>;
+  putProfile: (data: unknown) => Promise<void>;
 };
 
 function saveGame(slot: number, seq: number, day: number, positions: number): SaveGame {
@@ -251,4 +251,180 @@ test('loading a save with absurd prices repairs it and reports the notice once',
   // The repaired value must reach the engine, not just the parse.
   const restoredState = restored[0].game.pricing.states.find((s) => s.ticker === ticker);
   assert.ok(Number.isFinite(restoredState?.price));
+});
+
+function makeProfile(updatedAt: number, difficulty: 'learner' | 'standard' | 'hardcore' = 'standard'): Profile {
+  return {
+    schemaVersion: 1,
+    settings: {
+      difficulty,
+      soundEnabled: false,
+      tapeStripEnabled: true,
+      priceFlashSetting: 'subtle',
+      selectedTimeframe: '5m',
+      activeWorkspaceLayout: 'trade',
+      chartIndicators: {
+        volume: true,
+        sma20: true,
+        ema50: false,
+        vwap: true,
+        bollinger: false,
+        rsi: false,
+        macd: false,
+      },
+    },
+    tutorial: { completed: false, step: 0 },
+    layouts: {},
+    updatedAt,
+  };
+}
+
+function profileCloud(seedProfile: { data: unknown; updatedAt: number } | null = null) {
+  let stored = seedProfile;
+  const puts: unknown[] = [];
+  const cloud: CloudApi = {
+    list: async () => [],
+    get: async () => null,
+    getMeta: async () => null,
+    put: async () => ({ ok: true, revision: 1 }),
+    getProfile: async () => stored,
+    putProfile: async (data: unknown) => {
+      const updatedAt = Number((data as { updatedAt?: number }).updatedAt ?? 0);
+      stored = { data, updatedAt };
+      puts.push(data);
+    },
+  };
+  return { cloud, puts, stored: () => stored };
+}
+
+test('first sign in with an empty cloud profile uploads the local profile', async () => {
+  const local = makeProfile(100);
+  await writeProfile(ProfileSchema.encode(local), local.updatedAt);
+  const fake = profileCloud();
+  saveManager.setCloudStore(fake.cloud as never);
+
+  await saveManager.syncProfile();
+
+  assert.equal(fake.puts.length, 1, 'the local profile must be pushed on sign in');
+  assert.deepEqual(fake.puts[0], ProfileSchema.encode(local));
+});
+
+test('first sign in with no local profile materializes one from the live store and pushes it', async () => {
+  const live = makeProfile(50);
+  saveManager.init({
+    capture: () => captured,
+    restore: (save) => restored.push(save),
+    onStatus: (status) => statuses.push(status),
+    onConflict: (conflict) => conflicts.push(conflict),
+    onNotice: (message) => notices.push(message),
+    captureProfile: () => live,
+  });
+  const fake = profileCloud();
+  saveManager.setCloudStore(fake.cloud as never);
+
+  await saveManager.syncProfile();
+
+  assert.equal(fake.puts.length, 1, 'an empty cloud and empty local must still produce a row');
+  assert.deepEqual(fake.puts[0], ProfileSchema.encode(live));
+});
+
+test('a newer local profile wins over an older cloud profile', async () => {
+  const local = makeProfile(200, 'hardcore');
+  await writeProfile(ProfileSchema.encode(local), local.updatedAt);
+  const fake = profileCloud({ data: ProfileSchema.encode(makeProfile(100)), updatedAt: 100 });
+  saveManager.setCloudStore(fake.cloud as never);
+
+  await saveManager.syncProfile();
+
+  assert.equal(fake.puts.length, 1);
+  assert.equal((fake.puts[0] as Profile).settings.difficulty, 'hardcore');
+});
+
+test('a newer cloud profile wins, is stored locally and applied to the live state', async () => {
+  const local = makeProfile(100);
+  await writeProfile(ProfileSchema.encode(local), local.updatedAt);
+  const cloudProfile = makeProfile(300, 'learner');
+  const fake = profileCloud({ data: ProfileSchema.encode(cloudProfile), updatedAt: 300 });
+  const applied: Profile[] = [];
+  saveManager.init({
+    capture: () => captured,
+    restore: (save) => restored.push(save),
+    onStatus: (status) => statuses.push(status),
+    onConflict: (conflict) => conflicts.push(conflict),
+    onNotice: (message) => notices.push(message),
+    applyProfile: (profile) => applied.push(profile),
+  });
+  saveManager.setCloudStore(fake.cloud as never);
+
+  await saveManager.syncProfile();
+
+  assert.equal(fake.puts.length, 0, 'the newer cloud copy must not be overwritten');
+  assert.equal(applied.length, 1);
+  assert.equal(applied[0].settings.difficulty, 'learner');
+  const stored = (await readProfile()) as Profile | null;
+  assert.equal(stored?.updatedAt, 300);
+  assert.equal(stored?.settings.difficulty, 'learner');
+});
+
+test('an invalid cloud profile does not crash and leaves the local profile alone', async () => {
+  const local = makeProfile(100);
+  await writeProfile(ProfileSchema.encode(local), local.updatedAt);
+  const fake = profileCloud({ data: { foo: 'bar' }, updatedAt: 400 });
+  const applied: Profile[] = [];
+  saveManager.init({
+    capture: () => captured,
+    restore: (save) => restored.push(save),
+    onStatus: (status) => statuses.push(status),
+    onConflict: (conflict) => conflicts.push(conflict),
+    onNotice: (message) => notices.push(message),
+    applyProfile: (profile) => applied.push(profile),
+  });
+  saveManager.setCloudStore(fake.cloud as never);
+
+  await saveManager.syncProfile();
+
+  assert.equal(fake.puts.length, 0);
+  assert.equal(applied.length, 0);
+  const stored = (await readProfile()) as Profile | null;
+  assert.equal(stored?.updatedAt, 100);
+});
+
+test('a profile change writes local immediately and only pushes to the cloud debounced', async () => {
+  const fake = profileCloud();
+  saveManager.init({
+    capture: () => captured,
+    restore: (save) => restored.push(save),
+    onStatus: (status) => statuses.push(status),
+    onConflict: (conflict) => conflicts.push(conflict),
+    onNotice: (message) => notices.push(message),
+    captureProfile: () => makeProfile(Date.now(), 'hardcore'),
+  });
+  saveManager.setCloudStore(fake.cloud as never);
+
+  await saveManager.noteProfileChange();
+  const stored = (await readProfile()) as Profile | null;
+  assert.equal(stored?.settings.difficulty, 'hardcore', 'local profile must be written immediately');
+  assert.equal(fake.puts.length, 0, 'cloud push must be debounced');
+
+  await saveManager.flushProfilePush();
+  assert.equal(fake.puts.length, 1, 'the debounced push must reach the cloud');
+});
+
+test('an oversized profile is not pushed to the cloud', async () => {
+  const huge = makeProfile(10);
+  huge.layouts = { blob: 'x'.repeat(70 * 1024) };
+  saveManager.init({
+    capture: () => captured,
+    restore: (save) => restored.push(save),
+    onStatus: (status) => statuses.push(status),
+    onConflict: (conflict) => conflicts.push(conflict),
+    onNotice: (message) => notices.push(message),
+    captureProfile: () => huge,
+  });
+  const fake = profileCloud();
+  saveManager.setCloudStore(fake.cloud as never);
+
+  await saveManager.syncProfile();
+
+  assert.equal(fake.puts.length, 0, 'a profile over the size limit must stay local');
 });

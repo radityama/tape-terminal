@@ -345,3 +345,5 @@ export type Profile = z.infer<typeof ProfileSchema>;
 export const CANDLE_CAPS = { fine: 180, medium: 120, coarse: 250 } as const;
 export const SAVE_SIZE_SOFT_LIMIT = 1024 * 1024;
 export const SAVE_SIZE_HARD_LIMIT = 2 * 1024 * 1024;
+// Profile blobs hold settings, tutorial progress and layouts only; they are small on purpose.
+export const PROFILE_SIZE_LIMIT = 64 * 1024;

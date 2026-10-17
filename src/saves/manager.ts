@@ -1,4 +1,4 @@
-import { Profile, ProfileSchema, SaveGame, SaveGameSchema, SaveMeta, SCHEMA_VERSION, summarizeIssues } from './schema';
+import { PROFILE_SIZE_LIMIT, Profile, ProfileSchema, SaveGame, SaveGameSchema, SaveMeta, SCHEMA_VERSION, summarizeIssues } from './schema';
 import {
   LocalSaveStore,
   PutResult,
@@ -52,6 +52,10 @@ export interface SaveManagerHooks {
   onConflict?: (conflict: SyncConflict) => void;
   // One-line player-facing notice, for example when a loaded save had damaged prices repaired.
   onNotice?: (message: string) => void;
+  // Read the profile (settings, tutorial progress, layouts) out of the live store.
+  captureProfile?: () => Profile | null;
+  // Apply a cloud profile to the live store after it wins the last-write-wins comparison.
+  applyProfile?: (profile: Profile) => void;
 }
 
 export type LoadOutcome =
@@ -120,6 +124,7 @@ class SaveManagerImpl {
   private lastPushFailed = false;
   private lastPushOk = false;
   private cloudTimer: ReturnType<typeof setTimeout> | null = null;
+  private profileTimer: ReturnType<typeof setTimeout> | null = null;
   private warnedSeqRefusal = false;
 
   init(hooks: SaveManagerHooks): void {
@@ -614,7 +619,7 @@ class SaveManagerImpl {
     return result;
   }
 
-  // Profile blob: last write wins by updatedAt.
+  // Profile blob: last write wins by updatedAt. Runs on sign in and after local changes.
   async syncProfile(): Promise<void> {
     if (!this.cloud) return;
     try {
@@ -625,12 +630,67 @@ class SaveManagerImpl {
 
       if (remote && remoteUpdated > localUpdated) {
         const parsed = ProfileSchema.safeParse(remote.data);
-        if (parsed.success) await this.saveProfile(parsed.data);
-      } else if (local && localUpdated > remoteUpdated) {
-        await this.cloud.putProfile(ProfileSchema.encode(local));
+        // A malformed cloud profile must never crash or overwrite the device copy.
+        if (!parsed.success) return;
+        await this.saveProfile(parsed.data);
+        this.hooks?.applyProfile?.(parsed.data);
+        return;
       }
+
+      // Equal or older cloud copy: nothing to pull. No local copy: materialize the live
+      // state so a first sign in still creates the cloud row.
+      if (local && remoteUpdated >= localUpdated) return;
+      const winner = local ?? this.captureProfile();
+      if (!winner) return;
+      if (!local) await this.saveProfile(winner);
+      await this.pushProfile(winner);
     } catch {
       // Profile sync is best effort; it must never block gameplay.
+    }
+  }
+
+  // A setting that lives in the profile changed: write local at once, debounce the cloud push.
+  async noteProfileChange(): Promise<void> {
+    const profile = this.captureProfile();
+    if (!profile) return;
+    const previous = await this.loadProfile();
+    // Keep updatedAt strictly monotonic so two devices cannot tie.
+    const normalized: Profile = { ...profile, updatedAt: Math.max(Date.now(), (previous?.updatedAt ?? 0) + 1) };
+    const parsed = ProfileSchema.safeParse(normalized);
+    if (!parsed.success) return;
+    await this.saveProfile(parsed.data);
+    if (!this.cloud) return;
+    if (this.profileTimer) clearTimeout(this.profileTimer);
+    this.profileTimer = setTimeout(() => {
+      this.profileTimer = null;
+      void this.pushProfile(parsed.data);
+    }, 1500);
+  }
+
+  // Flush the debounced profile push now (pagehide and tests).
+  async flushProfilePush(): Promise<void> {
+    if (this.profileTimer) {
+      clearTimeout(this.profileTimer);
+      this.profileTimer = null;
+    }
+    await this.syncProfile();
+  }
+
+  private captureProfile(): Profile | null {
+    const profile = this.hooks?.captureProfile?.() ?? null;
+    if (!profile) return null;
+    const parsed = ProfileSchema.safeParse(profile);
+    return parsed.success ? parsed.data : null;
+  }
+
+  private async pushProfile(profile: Profile): Promise<void> {
+    if (!this.cloud) return;
+    const encoded = ProfileSchema.encode(profile);
+    if (JSON.stringify(encoded).length > PROFILE_SIZE_LIMIT) return;
+    try {
+      await this.cloud.putProfile(encoded);
+    } catch {
+      // Best effort: a failed profile push must not affect saving the game.
     }
   }
 
