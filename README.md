@@ -38,6 +38,7 @@ The player starts as an Intern Trader with a $100,000 cash account. A simulated 
   /(game)/terminal/page.tsx   # Main dockable workspace
   /(game)/layout.tsx
   /page.tsx                   # Title screen with live depth ladder
+proxy.ts                      # Next 16 proxy: refreshes the Supabase session
 /src
   /engine                     # Pure TypeScript, runs without React dependencies
     rng.ts                    # Deterministic seeded PRNG (Mulberry32 + Box-Muller)
@@ -73,13 +74,20 @@ The player starts as an Intern Trader with a $100,000 cash account. A simulated 
     company/                  # Company profile and fundamentals modal
     career/                   # Career rank progression modal
     eod-report/               # End-of-day settlement & coach report
-    settings/                 # Settings, difficulty presets, IndexedDB saves
+    settings/                 # Settings, difficulty presets, save slots
     tutorial/                 # 9-step spotlight walkthrough with guided first trade
   /store
     useTerminalStore.ts       # Granular Zustand store with engine bridge
+    useAuthStore.ts           # Supabase auth state (guest-first)
+  /saves
+    schema.ts                 # Versioned zod save format (money serialized as strings)
+    migrations.ts             # Ordered migrations, refuses newer-version saves
+    localStore.ts             # Dexie IndexedDB backend (LocalSaveStore)
+    cloudStore.ts             # Supabase backend (CloudSaveStore, RLS enforced)
+    manager.ts                # SaveManager: save/load, export/import, autosave, sync
   /lib
     money.ts                  # Decimal high-precision financial math
-    storage.ts                # Dexie IndexedDB save slots & JSON export/import
+    supabase/                 # Browser and server Supabase clients
 ```
 
 ---
@@ -142,3 +150,38 @@ To add Forex, Crypto, ETFs, or Options in Phase 2:
   ```bash
   npm run build
   ```
+
+---
+
+## 7. Accounts and Cloud Saves (optional)
+
+TAPE is guest-first. With no Supabase configured the game runs entirely on local Dexie storage. Configuring Supabase adds email magic-link, GitHub and Google sign-in, cloud backup, and cross-device sync. The service role key is never used in client code.
+
+### Environment
+
+Copy `.env.example` to `.env.local` and set:
+
+- `NEXT_PUBLIC_SUPABASE_URL`
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+
+Both are safe to expose in the browser; row level security enforces ownership. Without these values the sign-in entry points stay hidden and nothing else changes.
+
+### Database
+
+Apply `supabase/migrations/0001_cloud_saves.sql` (tables `saves` and `profiles`, RLS policies, revision and updated_at triggers, payload size limits). Prove isolation between two users with `supabase/tests/rls_saves.sql` after `supabase db reset`:
+
+```bash
+psql "$DATABASE_URL" -f supabase/tests/rls_saves.sql
+```
+
+### Self-hosted auth
+
+Magic links need SMTP. On a self-hosted Supabase auth service:
+
+- Configure SMTP (host, port, user, password, sender) so auth emails send. Magic links do not work without it.
+- Set the Site URL to your deployed origin, and add Redirect URLs for `http://localhost:3000` and your production origin.
+- Enable the GitHub and Google providers and paste their client IDs and secrets.
+
+### Session refresh
+
+`proxy.ts` at the project root refreshes the Supabase session on each request (Next 16 renamed Middleware to Proxy).

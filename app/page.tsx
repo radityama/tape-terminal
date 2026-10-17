@@ -5,8 +5,8 @@ import { useRouter } from 'next/navigation';
 import { useTerminalStore } from '../src/store/useTerminalStore';
 import { COMPANIES } from '../src/data/companies';
 import { SCENARIOS, Scenario } from '../src/data/scenarios';
-import { saveManager } from '../src/saves/manager';
-import { SaveMeta } from '../src/saves/schema';
+import { saveManager, MergedSlot } from '../src/saves/manager';
+import { useAuthStore } from '../src/store/useAuthStore';
 import { Play, CaretRight, Sliders, Gear, Sparkle, CaretUp, CaretDown, BookOpen } from '@phosphor-icons/react';
 
 export default function TitlePage() {
@@ -14,8 +14,11 @@ export default function TitlePage() {
   const initEngine = useTerminalStore((s) => s.initEngine);
   const startScenario = useTerminalStore((s) => s.startScenario);
   const restartTutorial = useTerminalStore((s) => s.restartTutorial);
+  const authConfigured = useAuthStore((s) => s.configured);
+  const authSignedIn = useAuthStore((s) => s.signedIn);
+  const openAuthDialog = useAuthStore((s) => s.openDialog);
 
-  const [saves, setSaves] = useState<SaveMeta[]>([]);
+  const [slots, setSlots] = useState<MergedSlot[]>([]);
   const [selectedScenario, setSelectedScenario] = useState<Scenario | null>(null);
   const [showScenarioModal, setShowScenarioModal] = useState(false);
   const [seedInput, setSeedInput] = useState('TAPE_1337');
@@ -42,7 +45,7 @@ export default function TitlePage() {
       }
     }
 
-    saveManager.listSlots().then(setSaves);
+    void saveManager.listAllSlots().then(setSlots);
 
     // Muted background tick loop for title screen price ladder
     const interval = setInterval(() => {
@@ -70,7 +73,7 @@ export default function TitlePage() {
     router.push('/terminal');
   };
 
-  const handleContinue = async (save: SaveMeta) => {
+  const handleContinue = async (save: MergedSlot) => {
     const outcome = await saveManager.load(save.slot);
     if (outcome.ok) router.push('/terminal');
   };
@@ -161,22 +164,27 @@ export default function TitlePage() {
           </div>
 
           {/* Continue Save Slots if available */}
-          {saves.length > 0 && (
+          {slots.length > 0 && (
             <div className="max-w-md space-y-2 font-mono text-[11px]">
               <div className="text-[10px] uppercase text-[var(--text-3)]">
                 Existing Save Slots
               </div>
               <div className="space-y-1">
-                {saves.slice(0, 2).map((s) => (
+                {slots.slice(0, 3).map((slot) => (
                   <button
-                    key={s.slot}
-                    onClick={() => handleContinue(s)}
+                    key={slot.slot}
+                    onClick={() => handleContinue(slot)}
                     className="w-full p-2 bg-[var(--bg-1)] hover:bg-[var(--bg-2)] border border-[var(--line)] rounded-[2px] flex items-center justify-between text-left cursor-pointer transition-colors"
                   >
                     <div>
-                      <div className="font-semibold text-[var(--text-1)]">{s.name}</div>
+                      <div className="font-semibold text-[var(--text-1)]">
+                        {slot.meta.name}
+                        <span className="text-[10px] text-[var(--text-3)] pl-2">
+                          {slot.origin === 'both' ? 'Both' : slot.origin === 'cloud' ? 'Cloud' : 'This device'}
+                        </span>
+                      </div>
                       <div className="text-[10px] text-[var(--text-3)]">
-                        Day {s.simDay} | Net Equity ${s.equity.toLocaleString()}
+                        Day {slot.meta.simDay} | Net Equity ${slot.meta.equity.toLocaleString()}
                       </div>
                     </div>
                     <span className="text-[var(--accent)] text-[10px]">Resume &rarr;</span>
@@ -184,6 +192,15 @@ export default function TitlePage() {
                 ))}
               </div>
             </div>
+          )}
+
+          {authConfigured && !authSignedIn && (
+            <button
+              onClick={() => openAuthDialog('signin')}
+              className="text-[11px] text-[var(--accent)] hover:underline cursor-pointer font-mono"
+            >
+              Sign in to sync saves across devices
+            </button>
           )}
         </div>
 
