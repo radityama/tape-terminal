@@ -315,7 +315,7 @@ function ClaimSavesDialog() {
 
 function describe(meta: SaveMeta | null) {
   if (!meta) return 'No save';
-  return `${meta.name} | Rank ${meta.rank ?? 'Intern'} | $${Math.round(meta.equity).toLocaleString()} | Day ${meta.simDay} | ${new Date(meta.updatedAt).toLocaleString()} | ${meta.deviceId}`;
+  return `${meta.name} | Rank ${meta.rank ?? 'Intern'} | $${Math.round(meta.equity).toLocaleString()} | Day ${meta.simDay} | Seq ${meta.seq ?? 0} | ${new Date(meta.updatedAt).toLocaleString()} | ${meta.deviceId}`;
 }
 
 function ConflictDialog() {

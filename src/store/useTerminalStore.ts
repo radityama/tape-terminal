@@ -83,9 +83,15 @@ export interface TerminalState {
 
   // Save state
   saveStatus: SaveStatus;
+  // Identifies the live engine instance for the capture hydration gate.
+  engineId: string | null;
+  // Hydration gate phases for a session (loading gate for autosave).
+  sessionPhase: 'idle' | 'loading' | 'ready';
 
   // Actions
   initEngine: (seed?: string, mode?: 'career' | 'sandbox', startingBalance?: number) => void;
+  // Hydrate a session: restore the stored slot when present, otherwise start fresh.
+  initSession: (seed?: string, mode?: 'career' | 'sandbox', startingBalance?: number) => Promise<void>;
   restoreFromSave: (save: SaveGame) => void;
   setSnapshot: (snapshot: MarketSnapshot) => void;
   setSelectedTicker: (ticker: string) => void;
@@ -171,12 +177,37 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
   snapshot: null,
 
   saveStatus: 'saved_locally',
+  engineId: null,
+  sessionPhase: 'idle',
 
   initEngine: (seed = 'TAPE_1337', mode = 'career', startingBalance = 100000) => {
     const engine = new MarketSimulationEngine(seed, startingBalance);
     wireEngine(engine, get);
     const initialSnap = engine.getSnapshot();
-    set({ engine, seed, mode, snapshot: initialSnap, pricesByTicker: buildPriceMap(initialSnap) });
+    const engineId = newEngineId();
+    set({ engine, engineId, seed, mode, snapshot: initialSnap, pricesByTicker: buildPriceMap(initialSnap) });
+    saveManager.bindSession(saveManager.getActiveSlot(), engineId);
+    saveManager.markSessionReady();
+  },
+
+  initSession: async (seed = 'TAPE_1337', mode = 'career', startingBalance = 100000) => {
+    if (get().engine) return;
+    useTerminalStore.setState({ sessionPhase: 'loading' });
+    // Prefer the stored local copy so a reload continues exactly where the player left off.
+    const slot = saveManager.getActiveSlot();
+    let restoredAtLeastOne = false;
+    try {
+      const local = await saveManager.listSlots();
+      restoredAtLeastOne = local.some((meta) => meta.slot === slot);
+    } catch {
+      restoredAtLeastOne = false;
+    }
+    if (restoredAtLeastOne) {
+      await saveManager.load(slot); // restores through hooks, which bind a fresh engine session
+    } else {
+      get().initEngine(seed, mode, startingBalance);
+    }
+    useTerminalStore.setState({ sessionPhase: 'ready' });
   },
 
   restoreFromSave: (save) => {
@@ -185,8 +216,10 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
     wireEngine(engine, get);
     const snapshot = engine.getSnapshot();
     const scenario = save.scenarioId ? (SCENARIOS.find((s) => s.id === save.scenarioId) ?? null) : null;
+    const engineId = newEngineId();
     set({
       engine,
+      engineId,
       seed: save.seed,
       mode: save.mode,
       activeScenario: scenario,
@@ -194,6 +227,8 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
       snapshot,
       pricesByTicker: buildPriceMap(snapshot),
     });
+    saveManager.bindSession(save.slot, engineId);
+    saveManager.markSessionReady();
   },
 
   setSnapshot: (snapshot) => {
@@ -322,6 +357,9 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
         message: res.error,
         type: 'error',
       });
+    } else if (res.success) {
+      // Pending order changes position state too; flush immediately.
+      saveManager.notePlayerAction();
     }
     // Refresh snapshot immediately
     set({ snapshot: engine.getSnapshot() });
@@ -338,6 +376,7 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
         message: `Order ${orderId} was removed from the book.`,
         type: 'info',
       });
+      saveManager.notePlayerAction();
       set({ snapshot: engine.getSnapshot() });
     }
     return ok;
@@ -411,12 +450,20 @@ function buildPriceMap(snapshot: MarketSnapshot): Record<string, PriceQuote> {
   return map;
 }
 
+function newEngineId(): string {
+  return typeof crypto !== 'undefined' && 'randomUUID' in crypto
+    ? crypto.randomUUID()
+    : `engine_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
 function wireEngine(engine: MarketSimulationEngine, get: () => TerminalState) {
   engine.setCallbacks({
     onSnapshot: (snap) => {
       get().setSnapshot(snap);
     },
     onTradeFill: (trade) => {
+      // A fill changes positions: write the local save immediately so a reload keeps it.
+      saveManager.notePlayerAction();
       get().addToast({
         title: 'Order Executed',
         message: `${trade.side.toUpperCase()} ${trade.shares} ${trade.ticker} @ $${trade.price.toFixed(2)}`,
@@ -453,6 +500,7 @@ saveManager.init({
     const snap = state.snapshot ?? state.engine.getSnapshot();
     const career = snap.career as { rank?: { name?: string } } | undefined;
     return {
+      engineId: state.engineId,
       name: state.activeScenario?.title ?? (state.mode === 'career' ? `Career ${slot}` : `Sandbox ${slot}`),
       seed: state.seed,
       mode: state.mode,

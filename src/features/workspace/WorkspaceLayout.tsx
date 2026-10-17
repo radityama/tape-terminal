@@ -4,6 +4,7 @@ import React, { useState } from 'react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { TopBar } from '../topbar/TopBar';
 import { TapeTicker } from '../topbar/TapeTicker';
+import { SyncIndicator } from '../auth/SyncIndicator';
 import { WatchlistPanel } from '../watchlist/WatchlistPanel';
 import { TradingViewChart } from '../chart/TradingViewChart';
 import { OrderTicket } from '../ticket/OrderTicket';
@@ -173,6 +174,10 @@ export function WorkspaceLayout() {
         <div className="flex items-center space-x-2 sm:space-x-3">
           <span className="hidden md:inline">Shortcut: Press / for command bar</span>
           <span className="hidden md:inline text-[var(--line-strong)]">|</span>
+          <span className="hidden sm:flex items-center">
+            <SyncIndicator />
+          </span>
+          <span className="hidden sm:inline text-[var(--line-strong)]">|</span>
           <span>TAPE Equities</span>
         </div>
       </footer>

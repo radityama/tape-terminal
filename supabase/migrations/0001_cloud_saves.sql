@@ -16,6 +16,8 @@ create table public.saves (
   sim_day int,
   payload jsonb not null,
   revision int not null default 1 check (revision > 0),
+  -- Monotonic progress counter echoed from the client save. Used to refuse stale pushes.
+  seq int not null default 0 check (seq >= 0),
   device_id text not null,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
@@ -78,8 +80,8 @@ create trigger profiles_touch
   before update on public.profiles
   for each row execute function public.touch_profile();
 
--- The API roles only need DML; RLS decides which rows they may touch. anon gets nothing.
+-- Anonymous reads return no rows under RLS; anonymous writes remain forbidden.
 grant select, insert, update, delete on public.saves to authenticated;
 grant select, insert, update, delete on public.profiles to authenticated;
-revoke all on public.saves from anon;
-revoke all on public.profiles from anon;
+grant select on public.saves, public.profiles to anon;
+revoke insert, update, delete on public.saves, public.profiles from anon;

@@ -13,6 +13,7 @@ interface SaveListRow {
   sim_day: number | null;
   updated_at: string;
   revision: number;
+  seq: number | null;
   device_id: string;
 }
 
@@ -74,7 +75,7 @@ export class CloudSaveStore implements SaveStore {
     }
 
     const json = JSON.stringify(encoded);
-    if (json.length > SAVE_SIZE_HARD_LIMIT) return { ok: false, reason: 'too_large' };
+    if (new TextEncoder().encode(json).length > SAVE_SIZE_HARD_LIMIT) return { ok: false, reason: 'too_large' };
 
     const row = {
       user_id: this.userId,
@@ -86,17 +87,28 @@ export class CloudSaveStore implements SaveStore {
       rank: save.summary.rank,
       equity: save.summary.equity,
       sim_day: save.summary.simDay,
+      seq: save.seq,
       payload: encoded,
       device_id: save.deviceId,
     };
 
-    // No base revision: only used by the claim flow, which creates the row if missing.
+    // No base revision: create only. A duplicate must be resolved, never overwritten.
     if (opts?.expectedRevision === undefined) {
       const { data, error } = await this.client
         .from('saves')
-        .upsert(row, { onConflict: 'user_id,slot' })
+        .insert(row)
         .select('revision')
         .single();
+      if (error?.code === '23505') {
+        const { data: existing, error: lookupError } = await this.client
+          .from('saves')
+          .select('revision')
+          .eq('user_id', this.userId)
+          .eq('slot', save.slot)
+          .maybeSingle();
+        if (lookupError) return { ok: false, reason: 'invalid', message: lookupError.message };
+        return { ok: false, reason: 'conflict', remoteRevision: existing?.revision ?? 0 };
+      }
       if (error) return { ok: false, reason: 'invalid', message: error.message };
       return { ok: true, revision: (data as { revision: number }).revision };
     }
@@ -113,24 +125,14 @@ export class CloudSaveStore implements SaveStore {
     if (error) return { ok: false, reason: 'invalid', message: error.message };
 
     if (!data) {
-      const { data: existing } = await this.client
+      const { data: existing, error: lookupError } = await this.client
         .from('saves')
         .select('revision')
         .eq('user_id', this.userId)
         .eq('slot', save.slot)
         .maybeSingle();
-
-      if (!existing) {
-        const { data: inserted, error: insertError } = await this.client
-          .from('saves')
-          .insert({ ...row, revision: opts.expectedRevision })
-          .select('revision')
-          .single();
-        if (insertError) return { ok: false, reason: 'invalid', message: insertError.message };
-        return { ok: true, revision: (inserted as { revision: number }).revision };
-      }
-
-      return { ok: false, reason: 'conflict', remoteRevision: existing.revision };
+      if (lookupError) return { ok: false, reason: 'invalid', message: lookupError.message };
+      return { ok: false, reason: 'conflict', remoteRevision: existing?.revision ?? 0 };
     }
 
     return { ok: true, revision: (data as { revision: number }).revision };
@@ -143,7 +145,7 @@ export class CloudSaveStore implements SaveStore {
   async getMeta(slot: number): Promise<SaveMeta | null> {
     const { data, error } = await this.client
       .from('saves')
-      .select('slot,name,seed,mode,rank,equity,sim_day,updated_at,revision,device_id')
+      .select('slot,name,seed,mode,rank,equity,sim_day,updated_at,revision,seq,device_id')
       .eq('slot', slot)
       .maybeSingle();
     if (error || !data) return null;
@@ -158,6 +160,7 @@ export class CloudSaveStore implements SaveStore {
       simDay: row.sim_day ?? 1,
       updatedAt: new Date(row.updated_at).getTime(),
       revision: row.revision,
+      seq: row.seq ?? undefined,
       deviceId: row.device_id,
     };
   }

@@ -18,16 +18,18 @@ import { useAuthStore } from '../../../src/store/useAuthStore';
 
 export default function TerminalPage() {
   const engine = useTerminalStore((s) => s.engine);
-  const initEngine = useTerminalStore((s) => s.initEngine);
+  const initSession = useTerminalStore((s) => s.initSession);
+  const sessionPhase = useTerminalStore((s) => s.sessionPhase);
   const setSnapshot = useTerminalStore((s) => s.setSnapshot);
   const lastTickTime = useRef<number>(0);
 
-  // Initialize engine if not already running
+  // Hydrate the session if not already running: restore the stored slot when present,
+  // otherwise start a fresh engine. Autosave only writes once the session is ready.
   useEffect(() => {
-    if (!engine) {
-      initEngine('TAPE_1337', 'career', 100000);
+    if (!engine && sessionPhase !== 'loading') {
+      void initSession();
     }
-  }, [engine, initEngine]);
+  }, [engine, sessionPhase, initSession]);
 
   // Simulation tick loop (runs engine ticks and batches snapshots to main thread:
   // at most 4 times per second at 1x, up to 10 per second at 20x)
@@ -75,11 +77,16 @@ export default function TerminalPage() {
     const onVisibilityChange = () => {
       if (document.visibilityState === 'hidden') void saveManager.flush();
     };
+    const onPageHide = () => {
+      void saveManager.flush();
+    };
     document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('pagehide', onPageHide);
 
     return () => {
       clearInterval(timer);
       document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('pagehide', onPageHide);
     };
   }, []);
 

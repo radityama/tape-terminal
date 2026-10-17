@@ -18,6 +18,7 @@ function makeSave(engine: MarketSimulationEngine, seed: string): SaveGame {
     createdAt: now,
     updatedAt: now,
     revision: 1,
+    seq: 1,
     deviceId: 'test-device',
     summary: {
       rank: (snapshot.career as { rank?: { name?: string } } | undefined)?.rank?.name ?? null,

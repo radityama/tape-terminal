@@ -76,6 +76,8 @@ export interface MarketEngineState {
   simSecondsOfDay: number;
   session: SimSession;
   rngState: number;
+  // Monotonic counter bumped on sim day advances and player actions; drives the save seq guard.
+  actionSeq: number;
   pricing: PricingEngineState;
   portfolio: PortfolioEngineState;
   career: CareerEngineState;
@@ -102,6 +104,7 @@ export class MarketSimulationEngine {
   // Time scale factor: 23,400 / 360 = 65 sim seconds per real second at 1x
   private speed: SimSpeed = 1;
   private simDay: number = 1;
+  private actionSeq: number = 0;
   private simSecondsOfDay: number = 9.5 * 3600; // start at 09:30:00 (34,200 seconds)
   private session: SimSession = 'regular';
   private lastRealTimestamp: number = Date.now();
@@ -160,6 +163,7 @@ export class MarketSimulationEngine {
       simSecondsOfDay: this.simSecondsOfDay,
       session: this.session,
       rngState: this.rng.getState(),
+      actionSeq: this.actionSeq,
       pricing: this.pricingEngine.exportState(),
       portfolio: this.portfolioEngine.exportState(),
       career: this.careerEngine.exportState(),
@@ -193,6 +197,7 @@ export class MarketSimulationEngine {
     }
     // Restore the RNG counter last: rebuilding the derived depth cache above consumes draws.
     this.rng.setState(state.rngState);
+    this.actionSeq = typeof state.actionSeq === 'number' ? state.actionSeq : 0;
   }
 
   setCallbacks(cbs: {
@@ -267,6 +272,7 @@ export class MarketSimulationEngine {
       this.evaluateOrder(order, depth, priceState.price);
     }
 
+    this.actionSeq += 1;
     return { success: true, orderId };
   }
 
@@ -275,6 +281,7 @@ export class MarketSimulationEngine {
     if (order && order.status === 'pending') {
       order.status = 'cancelled';
       this.openOrders.delete(orderId);
+      this.actionSeq += 1;
       return true;
     }
     return false;
@@ -402,6 +409,7 @@ export class MarketSimulationEngine {
       order.averageFillPrice = fillResult.fillPrice;
       order.commissionPaid = commission;
       this.openOrders.delete(order.id);
+      this.actionSeq += 1;
 
       // First fill achievement
       const ach = this.careerEngine.unlockAchievement('first_fill');
@@ -507,6 +515,7 @@ export class MarketSimulationEngine {
 
     // Reset clock for next trading day
     this.simDay += 1;
+    this.actionSeq += 1;
     this.simSecondsOfDay = 9.5 * 3600; // 09:30:00
     this.pricingEngine.startNewDay(Math.floor(Date.now() / 1000));
     this.portfolioEngine.resetDayStartEquity(risk.netLiquidationValue);

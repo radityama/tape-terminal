@@ -3,7 +3,7 @@
 import React from 'react';
 import { useTerminalStore } from '../../store/useTerminalStore';
 import { SimSpeed } from '../../engine/market';
-import { SyncIndicator, UserMenuButton } from '../auth/SyncIndicator';
+import { UserMenuButton } from '../auth/SyncIndicator';
 import {
   Play,
   Pause,
@@ -214,7 +214,6 @@ export function TopBar() {
             <Question size={14} weight="bold" />
           </button>
 
-          <SyncIndicator />
           <UserMenuButton />
         </div>
       </div>

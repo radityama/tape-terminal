@@ -168,10 +168,12 @@ Both are safe to expose in the browser; row level security enforces ownership. W
 
 ### Database
 
-Apply `supabase/migrations/0001_cloud_saves.sql` (tables `saves` and `profiles`, RLS policies, revision and updated_at triggers, payload size limits). Prove isolation between two users with `supabase/tests/rls_saves.sql` after `supabase db reset`:
+For local testing, run `bunx supabase init` if `supabase/config.toml` is missing, then `bunx supabase start` and `bunx supabase db reset`. Use the API URL and anon key from `bunx supabase status` in `.env.local`. Local magic links arrive in the mail inbox shown by `status`, so local testing does not need SMTP.
+
+The reset applies `supabase/migrations/0001_cloud_saves.sql` (tables `saves` and `profiles`, RLS policies, revision and updated_at triggers, payload size limits). On this disposable local database, set `DATABASE_URL` to the DB URL shown by `bunx supabase status`, then run the isolation assertions with `psql`:
 
 ```bash
-psql "$DATABASE_URL" -f supabase/tests/rls_saves.sql
+psql -X -v ON_ERROR_STOP=1 "$DATABASE_URL" -f supabase/tests/rls_saves.sql
 ```
 
 ### Self-hosted auth

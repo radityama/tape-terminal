@@ -36,6 +36,7 @@ function legacyToV1(raw: RawSave): RawSave {
   const name = (typeof raw.name === 'string' && raw.name.trim() ? raw.name.trim() : 'Career').slice(0, 40);
 
   const game = new MarketSimulationEngine(seed, equity).exportState();
+  game.actionSeq = simDay;
 
   return {
     schemaVersion: 1,
@@ -48,6 +49,7 @@ function legacyToV1(raw: RawSave): RawSave {
     createdAt: savedAt,
     updatedAt: savedAt,
     revision: 1,
+    seq: typeof raw.seq === 'number' ? raw.seq : simDay,
     deviceId: typeof raw.deviceId === 'string' ? raw.deviceId : 'legacy',
     summary: { rank: null, equity, simDay },
     game,

@@ -14,6 +14,14 @@ const STATUS_TEXT: Record<SaveStatus, string> = {
   sync_failed: 'Sync failed, retrying',
 };
 
+const STATUS_DETAIL: Record<SaveStatus, string> = {
+  saved_locally: 'Saves live in this browser only. Sign in to back them up.',
+  syncing: 'Uploading this career to your account.',
+  synced: 'This career is backed up to your account.',
+  offline: 'No connection. Progress is still saved on this device.',
+  sync_failed: 'The last sync failed. Progress is safe on this device and will retry.',
+};
+
 function StatusIcon({ status }: { status: SaveStatus }) {
   if (status === 'syncing') return <SpinnerGap size={13} className="animate-spin" />;
   if (status === 'synced') return <CloudCheck size={13} />;
@@ -28,10 +36,48 @@ export function SyncIndicator() {
   const status: SaveStatus = signedIn ? saveStatus : 'saved_locally';
 
   return (
-    <span className="hidden lg:flex items-center space-x-1 text-[10px] font-mono text-[var(--text-3)]">
+    <span
+      className="inline-flex items-center space-x-1 text-[10px] font-mono text-[var(--text-3)]"
+      title={STATUS_DETAIL[status]}
+      aria-live="polite"
+    >
       <StatusIcon status={status} />
       <span>{STATUS_TEXT[status]}</span>
     </span>
+  );
+}
+
+/** Full-width status block for Settings & Saves, where there is room for the explanation. */
+export function SaveStatusRow() {
+  const saveStatus = useTerminalStore((s) => s.saveStatus);
+  const configured = useAuthStore((s) => s.configured);
+  const signedIn = useAuthStore((s) => s.signedIn);
+  const openDialog = useAuthStore((s) => s.openDialog);
+  const status: SaveStatus = signedIn ? saveStatus : 'saved_locally';
+
+  return (
+    <div className="flex items-start justify-between space-x-3 border border-[var(--line)] bg-[var(--bg-1)] rounded-[2px] p-2">
+      <div className="flex items-start space-x-1.5">
+        <span className="mt-0.5 text-[var(--text-3)]">
+          <StatusIcon status={status} />
+        </span>
+        <div>
+          <div className="text-[11px] font-mono font-semibold text-[var(--text-1)]">{STATUS_TEXT[status]}</div>
+          <div className="text-[10px] font-sans leading-tight text-[var(--text-3)] mt-0.5">
+            {STATUS_DETAIL[status]}
+          </div>
+        </div>
+      </div>
+
+      {configured && !signedIn && (
+        <button
+          onClick={() => openDialog('signin')}
+          className="shrink-0 px-2 py-1 bg-[var(--bg-2)] hover:bg-[var(--line)] border border-[var(--line)] rounded-[2px] text-[10px] font-mono text-[var(--accent)] cursor-pointer"
+        >
+          Sign in
+        </button>
+      )}
+    </div>
   );
 }
 

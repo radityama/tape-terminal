@@ -216,6 +216,8 @@ const marketEngineStateSchema = z.object({
   simSecondsOfDay: z.number(),
   session: z.enum(['pre_market', 'regular', 'after_hours', 'closed']),
   rngState: z.number(),
+  // Monotonic counter bumped on sim day advances and player actions; drives the save seq guard.
+  actionSeq: z.number().int().min(0).default(0),
   pricing: pricingEngineStateSchema,
   portfolio: portfolioEngineStateSchema,
   career: careerEngineStateSchema,
@@ -236,6 +238,9 @@ export const SaveGameSchema = z.object({
   createdAt: z.number(),
   updatedAt: z.number(),
   revision: z.number().int().min(1),
+  // Monotonic progress counter: increments on every sim day advance and player action.
+  // A snapshot whose seq is lower than the stored slot's seq must never overwrite it.
+  seq: z.number().int().min(0).default(0),
   deviceId: z.string(),
   summary: z.object({
     rank: z.string().nullable(),
@@ -257,6 +262,7 @@ export const SaveMetaSchema = z.object({
   simDay: z.number().int(),
   updatedAt: z.number(),
   revision: z.number().int(),
+  seq: z.number().int().optional(),
   deviceId: z.string(),
 });
 
@@ -273,6 +279,7 @@ export function saveToMeta(save: SaveGame): SaveMeta {
     simDay: save.summary.simDay,
     updatedAt: save.updatedAt,
     revision: save.revision,
+    seq: save.seq,
     deviceId: save.deviceId,
   };
 }

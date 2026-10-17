@@ -19,6 +19,7 @@ export default function TitlePage() {
   const openAuthDialog = useAuthStore((s) => s.openDialog);
 
   const [slots, setSlots] = useState<MergedSlot[]>([]);
+  const [historySlots, setHistorySlots] = useState<number[]>([]);
   const [selectedScenario, setSelectedScenario] = useState<Scenario | null>(null);
   const [showScenarioModal, setShowScenarioModal] = useState(false);
   const [seedInput, setSeedInput] = useState('TAPE_1337');
@@ -45,7 +46,13 @@ export default function TitlePage() {
       }
     }
 
-    void saveManager.listAllSlots().then(setSlots);
+    void saveManager.listAllSlots().then(async (list) => {
+      setSlots(list);
+      const withHistory = await Promise.all(
+        list.map((slot) => saveManager.hasHistory(slot.slot).then((has) => (has ? slot.slot : null)))
+      );
+      setHistorySlots(withHistory.filter((slot): slot is number => slot !== null));
+    });
 
     // Muted background tick loop for title screen price ladder
     const interval = setInterval(() => {
@@ -66,11 +73,22 @@ export default function TitlePage() {
   }, [initEngine, router]);
 
   const handleStartCareer = () => {
+    const slot = saveManager.getActiveSlot();
+    const occupied = slots.some((s) => s.slot === slot);
+    if (occupied && !window.confirm('Starting a new career replaces the save in this slot. Continue?')) return;
     initEngine(seedInput || 'TAPE_1337', 'career', 100000);
+    // Explicit choice: replace the slot even though its seq is higher than a fresh career.
+    void saveManager.save(slot, { force: true });
     // Trigger tutorial on first career start
     useTerminalStore.getState().setDifficulty(difficultySelect);
     useTerminalStore.getState().restartTutorial();
     router.push('/terminal');
+  };
+
+  const handleRestoreAutosave = async (slot: number) => {
+    if (!window.confirm('Restore the previous autosave in this slot?')) return;
+    const ok = await saveManager.restoreHistory(slot);
+    if (ok) router.push('/terminal');
   };
 
   const handleContinue = async (save: MergedSlot) => {
@@ -188,6 +206,25 @@ export default function TitlePage() {
                       </div>
                     </div>
                     <span className="text-[var(--accent)] text-[10px]">Resume &rarr;</span>
+                    {historySlots.includes(slot.slot) && (
+                      <span
+                        role="button"
+                        tabIndex={0}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleRestoreAutosave(slot.slot);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.stopPropagation();
+                            void handleRestoreAutosave(slot.slot);
+                          }
+                        }}
+                        className="text-[10px] text-[var(--text-3)] hover:text-[var(--text-1)] pl-2 cursor-pointer underline"
+                      >
+                        Restore previous autosave
+                      </span>
+                    )}
                   </button>
                 ))}
               </div>

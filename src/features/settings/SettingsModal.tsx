@@ -4,6 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { useTerminalStore } from '../../store/useTerminalStore';
 import { saveManager, LoadOutcome } from '../../saves/manager';
 import { SaveMeta } from '../../saves/schema';
+import { SaveStatusRow } from '../auth/SyncIndicator';
 import { X, FloppyDisk, DownloadSimple, UploadSimple, ArrowClockwise } from '@phosphor-icons/react';
 
 export function SettingsModal() {
@@ -112,7 +113,11 @@ export function SettingsModal() {
 
   const handleApplySeed = () => {
     if (customSeed.trim()) {
+      const slot = saveManager.getActiveSlot();
+      const replaced = window.confirm('Generating a new universe replaces the current career in this slot. Continue?');
+      if (!replaced) return;
       initEngine(customSeed.trim(), 'career', 100000);
+      void saveManager.save(slot, { force: true });
       addToast({ title: 'Seed Applied', message: `New universe generated with seed: ${customSeed.trim()}.`, type: 'info' });
       setActiveModal('none');
     }
@@ -255,6 +260,8 @@ export function SettingsModal() {
                 <span>Import JSON</span>
               </button>
             </div>
+
+            <SaveStatusRow />
 
             {showImportBox && (
               <div className="p-2 bg-[var(--bg-1)] border border-[var(--line)] rounded-[2px] space-y-2">

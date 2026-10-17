@@ -13,7 +13,7 @@ export type PutResult =
 export interface SaveStore {
   list(): Promise<SaveMeta[]>;
   get(slot: number): Promise<SaveGame | null>;
-  put(save: SaveGame, opts?: { expectedRevision?: number }): Promise<PutResult>;
+  put(save: SaveGame, opts?: { expectedRevision?: number; force?: boolean }): Promise<PutResult>;
   delete(slot: number): Promise<void>;
 }
 
@@ -60,6 +60,15 @@ interface BackupRow {
   payload: string;
 }
 
+// Rolling autosave history: the last 3 versions of each slot, at most one per sim day.
+export interface AutosaveHistoryRow {
+  id?: number;
+  slot: number;
+  savedAt: number;
+  simDay: number;
+  payload: string;
+}
+
 export interface ProfileRow {
   key: string;
   value: string;
@@ -71,6 +80,7 @@ export class TapeDatabase extends Dexie {
   tickHistory!: Table<StoredTickRecord, number>;
   backups!: Table<BackupRow, number>;
   profiles!: Table<ProfileRow, string>;
+  autosaveHistory!: Table<AutosaveHistoryRow, number>;
 
   constructor() {
     super('TapeTradingGameDB');
@@ -84,6 +94,13 @@ export class TapeDatabase extends Dexie {
       backups: '++id, slot, savedAt',
       profiles: 'key',
     });
+    this.version(3).stores({
+      savedGames: 'id, slot, name, updatedAt',
+      tickHistory: '++id, ticker, time',
+      backups: '++id, slot, savedAt',
+      profiles: 'key',
+      autosaveHistory: '++id, slot, savedAt',
+    });
   }
 }
 
@@ -92,8 +109,7 @@ export const db = new TapeDatabase();
 const slotId = (slot: number) => `slot_${slot}`;
 
 function rowToSave(row: SaveRow): SaveGame {
-  const raw: RawSave =
-    typeof row.payload === 'string' ? (JSON.parse(row.payload) as RawSave) : (row as unknown as RawSave);
+  const raw = rawFromRow(row);
 
   const version = rawSchemaVersion(raw);
   if (version > SCHEMA_VERSION) throw new SaveVersionError(version, SCHEMA_VERSION);
@@ -104,7 +120,18 @@ function rowToSave(row: SaveRow): SaveGame {
   return parsed.data;
 }
 
-function saveToRow(save: SaveGame, revision: number): SaveRow {
+function rawFromRow(row: SaveRow): RawSave {
+  if (typeof row.payload !== 'string') return row as unknown as RawSave;
+  try {
+    const raw: unknown = JSON.parse(row.payload);
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) return raw as RawSave;
+  } catch {
+    // The original record stays untouched so it can be exported for recovery.
+  }
+  throw new SaveCorruptError('The payload is not a JSON object.');
+}
+
+function saveToRow(save: SaveGame, revision: number): SaveRow & { payload: string } {
   return {
     id: slotId(save.slot),
     slot: save.slot,
@@ -155,8 +182,7 @@ export class LocalSaveStore implements SaveStore {
     const row = await db.savedGames.get(slotId(slot));
     if (!row) return null;
 
-    const raw: RawSave =
-      typeof row.payload === 'string' ? (JSON.parse(row.payload) as RawSave) : (row as unknown as RawSave);
+    const raw = rawFromRow(row);
     const version = rawSchemaVersion(raw);
     if (version > SCHEMA_VERSION) throw new SaveVersionError(version, SCHEMA_VERSION);
 
@@ -168,31 +194,75 @@ export class LocalSaveStore implements SaveStore {
     return save;
   }
 
-  async put(save: SaveGame, opts?: { expectedRevision?: number }): Promise<PutResult> {
-    let encoded: unknown;
-    try {
-      encoded = SaveGameSchema.encode(save);
-    } catch (err) {
-      return { ok: false, reason: 'invalid', message: err instanceof Error ? err.message : 'invalid save' };
-    }
+  async put(save: SaveGame, opts?: { expectedRevision?: number; force?: boolean }): Promise<PutResult> {
+    return db.transaction('rw', db.savedGames, db.autosaveHistory, async (): Promise<PutResult> => {
+      const existing = await db.savedGames.get(slotId(save.slot));
+      const existingRevision = existing?.revision ?? 0;
+      if (opts?.expectedRevision !== undefined && existingRevision !== opts.expectedRevision && !opts?.force) {
+        return { ok: false, reason: 'conflict', remoteRevision: existingRevision };
+      }
 
-    const json = JSON.stringify(encoded);
-    if (json.length > SAVE_SIZE_HARD_LIMIT) return { ok: false, reason: 'too_large' };
+      const revision = existingRevision + 1;
+      let row: SaveRow & { payload: string };
+      try {
+        row = saveToRow(save, revision);
+      } catch (err) {
+        return { ok: false, reason: 'invalid', message: err instanceof Error ? err.message : 'invalid save' };
+      }
+      if (new TextEncoder().encode(row.payload).length > SAVE_SIZE_HARD_LIMIT) {
+        return { ok: false, reason: 'too_large' };
+      }
 
-    const existing = await db.savedGames.get(slotId(save.slot));
-    const existingRevision = typeof existing?.revision === 'number' ? existing.revision : undefined;
+      // Before overwriting a populated slot, keep the previous version in the rolling history:
+      // one row per sim day, newest 3 kept. The very first write of a slot has nothing to keep.
+      if (existing?.payload) {
+        const wroteToday = existing.simDay != null
+          ? await db.autosaveHistory.where('slot').equals(save.slot).toArray()
+              .then((rows) => rows.some((r) => r.simDay === existing.simDay))
+          : true;
+        if (!wroteToday) {
+          await db.autosaveHistory.add({
+            slot: save.slot,
+            savedAt: Date.now(),
+            simDay: existing.simDay ?? 0,
+            payload: existing.payload,
+          });
+        }
+        const kept = await db.autosaveHistory.where('slot').equals(save.slot).sortBy('savedAt');
+        while (kept.length > 3) {
+          const oldest = kept.shift();
+          if (oldest?.id != null) await db.autosaveHistory.delete(oldest.id);
+        }
+      }
 
-    if (opts?.expectedRevision !== undefined && existingRevision !== undefined && existingRevision !== opts.expectedRevision) {
-      return { ok: false, reason: 'conflict', remoteRevision: existingRevision };
-    }
-
-    const revision = existingRevision !== undefined ? existingRevision + 1 : 1;
-    await db.savedGames.put({ ...saveToRow(save, revision), payload: json });
-    return { ok: true, revision };
+      await db.savedGames.put(row);
+      return { ok: true, revision };
+    });
   }
 
   async delete(slot: number): Promise<void> {
     await db.savedGames.delete(slotId(slot));
+  }
+
+  async hasHistory(slot: number): Promise<boolean> {
+    return (await db.autosaveHistory.where('slot').equals(slot).count()) > 0;
+  }
+
+  async restoreHistory(slot: number): Promise<SaveGame | null> {
+    return db.transaction('rw', db.savedGames, db.autosaveHistory, async (): Promise<SaveGame | null> => {
+      const rows = await db.autosaveHistory.where('slot').equals(slot).sortBy('savedAt');
+      const latest = rows[rows.length - 1];
+      if (!latest) return null;
+      const raw: unknown = JSON.parse(latest.payload);
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new SaveCorruptError('History row is not a save.');
+      const migrated = migrate(raw as RawSave);
+      const parsed = SaveGameSchema.safeParse(migrated);
+      if (!parsed.success) throw new SaveCorruptError('A previous autosave could not be read.');
+      const save = parsed.data;
+      const result = await this.put(save, { force: true, expectedRevision: undefined });
+      if (!result.ok) throw new SaveCorruptError(`Could not restore the previous autosave: ${result.reason}${'message' in result ? `: ${result.message}` : ''}`);
+      return { ...save, revision: result.revision };
+    });
   }
 
   private async backup(slot: number, raw: RawSave): Promise<void> {
