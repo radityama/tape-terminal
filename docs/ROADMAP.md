@@ -40,6 +40,7 @@ Run a documentation pass whenever you finish a feature or find a gap while worki
 | ACCT-DELETE | Full account deletion (removing the auth user) is not built. The account dialog deletes cloud save rows only. | Removing the auth user needs a server-only route handler holding the service role key. The service role key must never reach the client, so it cannot be part of the client-only cloud-save work. | Before public launch. | Open |
 | SYNC-PROFILE | The profile blob (settings, tutorial progress) syncs last-write-wins on `updatedAt`, so a device with an older clock can win. | Single-user data with no merge semantics; conflicts are not meaningful yet. | If profile data becomes multi-device critical or gains fields a user would not want silently replaced. | Open |
 | SYNC-TESTS | Cloud sync, the claim flow, and conflict resolution have no automated tests. | They need a live or emulated Supabase backend; only the RLS isolation test is written (`supabase/tests/rls_saves.sql`). | When a Supabase instance is available in CI (local supabase or a test project). | Open |
+| LOAD-UI | A load failure shows a plain message, not the full recovery dialog with 'Export raw save' and 'Start new career'. | Reading a damaged save currently returns null, so the raw bytes are not exposed for export. | When a player reports a save that fails to load, or before public launch. | Open |
 
 ## Decisions log
 
