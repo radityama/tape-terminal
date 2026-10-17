@@ -57,18 +57,21 @@ let captured: CaptureFields | null;
 let statuses: SaveStatus[] = [];
 let restored: SaveGame[];
 let conflicts: SyncConflict[];
+let notices: string[];
 
 function install() {
   captured = null;
   statuses = [];
   restored = [];
   conflicts = [];
+  notices = [];
   saveManager.setStore(new LocalSaveStore());
   saveManager.init({
     capture: () => captured,
     restore: (save) => restored.push(save),
     onStatus: (status) => statuses.push(status),
     onConflict: (conflict) => conflicts.push(conflict),
+    onNotice: (message) => notices.push(message),
   });
 }
 
@@ -228,4 +231,24 @@ test('autsave history keeps the last 3 versions, at most one per sim day, and ca
   await saveManager.restoreHistory(1);
   assert.equal(restored.length, 1, 'restore must hand the previous autosave to the store');
   assert.equal(restored[0].summary.simDay, 4, 'restored the day 4 snapshot');
+});
+
+test('loading a save with absurd prices repairs it and reports the notice once', async () => {
+  const store = new LocalSaveStore();
+  await store.put(saveGame(1, 10, 2, 0), { expectedRevision: undefined });
+  const row = await db.savedGames.get('slot_1');
+  const payload = JSON.parse(String(row?.payload)) as {
+    game: { pricing: { states: Array<{ ticker: string; price: unknown }> } };
+  };
+  const ticker = payload.game.pricing.states[0].ticker;
+  payload.game.pricing.states[0].price = 1e54;
+  await db.savedGames.update('slot_1', { payload: JSON.stringify(payload) });
+
+  const outcome = await saveManager.load(1);
+  assert.equal(outcome.ok, true);
+  assert.equal(notices.length, 1, 'the player must be told exactly once');
+  assert.match(notices[0], /1 symbols reset to fair value/);
+  // The repaired value must reach the engine, not just the parse.
+  const restoredState = restored[0].game.pricing.states.find((s) => s.ticker === ticker);
+  assert.ok(Number.isFinite(restoredState?.price));
 });

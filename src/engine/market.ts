@@ -78,6 +78,8 @@ export interface MarketEngineState {
   rngState: number;
   // Monotonic counter bumped on sim day advances and player actions; drives the save seq guard.
   actionSeq: number;
+  // Earnings jumps queued at the end of a day and applied on the next price step.
+  activeJumpDeltas: Array<[string, number]>;
   pricing: PricingEngineState;
   portfolio: PortfolioEngineState;
   career: CareerEngineState;
@@ -164,6 +166,7 @@ export class MarketSimulationEngine {
       session: this.session,
       rngState: this.rng.getState(),
       actionSeq: this.actionSeq,
+      activeJumpDeltas: Array.from(this.activeJumpDeltas.entries()),
       pricing: this.pricingEngine.exportState(),
       portfolio: this.portfolioEngine.exportState(),
       career: this.careerEngine.exportState(),
@@ -187,7 +190,8 @@ export class MarketSimulationEngine {
     this.openOrders = new Map(state.openOrders.map((o) => [o.id, { ...o }]));
     this.activeNews = state.activeNews.map((n) => ({ ...n }));
     this.upcomingEarnings = state.upcomingEarnings.map((n) => ({ ...n }));
-    this.activeJumpDeltas.clear();
+    // A jump queued by concludeTradingDay applies on the next tick, so it is real state.
+    this.activeJumpDeltas = new Map(state.activeJumpDeltas ?? []);
     this.eodReports = [];
     this.currentEodModal = null;
     this.depthCache.clear();

@@ -1,8 +1,10 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
+import { z } from 'zod';
 import { MarketSimulationEngine } from '../engine/market.ts';
-import { SaveGame, SaveGameSchema, SCHEMA_VERSION } from './schema.ts';
-import { migrate, SaveVersionError, rawSchemaVersion } from './migrations.ts';
+import { COMPANY_MAP } from '../data/companies.ts';
+import { SaveGame, SaveGameSchema, SCHEMA_VERSION, decimalStringFromNumber, summarizeIssues } from './schema.ts';
+import { consumeSaveRepairs, migrate, SaveVersionError, rawSchemaVersion } from './migrations.ts';
 
 function makeSave(engine: MarketSimulationEngine, seed: string): SaveGame {
   const snapshot = engine.getSnapshot();
@@ -152,4 +154,59 @@ test('migrate is a no-op for a save already at the current version', () => {
   const twice = migrate(once);
   assert.deepEqual(twice, once);
   assert.equal(rawSchemaVersion(twice), SCHEMA_VERSION);
+});
+
+test('decimals are fixed point and never scientific notation', () => {
+  assert.equal(decimalStringFromNumber(0.1 + 0.2), '0.3');
+  assert.equal(decimalStringFromNumber(151.7), '151.7');
+  assert.equal(decimalStringFromNumber(-0), '0');
+  assert.throws(() => decimalStringFromNumber(1e54), /out-of-range/);
+  assert.throws(() => decimalStringFromNumber(Infinity), /non-finite/);
+
+  const engine = new MarketSimulationEngine('FIXED_POINT', 100000);
+  for (let i = 0; i < 10; i++) engine.tick(100);
+  const wire = wireOf(makeSave(engine, 'FIXED_POINT'));
+  const serialized = JSON.stringify(wire);
+  const decimalFields = serialized.match(/-?\d+(\.\d+)?[eE][+-]?\d+/g);
+  assert.equal(decimalFields, null, `money must never be written with an exponent: ${decimalFields?.[0]}`);
+
+  const bad = structuredClone(wire) as Record<string, unknown>;
+  (bad.game as { pricing: { states: Array<{ price: unknown }> } }).pricing.states[0].price = '1e54';
+  assert.equal(SaveGameSchema.safeParse(bad).success, false, 'an exponent decimal must be rejected');
+});
+
+test('validation errors report at most five issues plus a count', () => {
+  const error = new z.ZodError(
+    Array.from({ length: 7 }, (_, i) => ({ code: 'custom' as const, message: `issue ${i}`, path: [`field_${i}`] }))
+  );
+  const summary = summarizeIssues(error);
+  assert.equal(summary.match(/issue \d/g)?.length, 5);
+  assert.ok(summary.endsWith('(+2 more issues)'));
+});
+
+test('old saves with absurd prices are repaired on load and reported once', () => {
+  consumeSaveRepairs();
+  const engine = new MarketSimulationEngine('OVERFLOW_REPAIR', 100000);
+  const wire = wireOf(makeSave(engine, 'OVERFLOW_REPAIR')) as Record<string, unknown>;
+  const states = (wire.game as { pricing: { states: Array<Record<string, unknown>> } }).pricing.states;
+  const firstTicker = String(states[0].ticker);
+  const secondTicker = String(states[1].ticker);
+  states[0].price = 1e54;
+  states[1].price = '1.4e54';
+  states[2].price = Number.POSITIVE_INFINITY;
+
+  const parsed = SaveGameSchema.safeParse(migrate(wire));
+  assert.equal(parsed.success, true, 'a save from the bug era must still load');
+  const repaired = consumeSaveRepairs();
+  assert.deepEqual([...repaired].sort(), [firstTicker, secondTicker, String(states[2].ticker)].sort());
+  assert.deepEqual(consumeSaveRepairs(), [], 'repairs are reported once');
+
+  if (parsed.success) {
+    const pricing = parsed.data.game.pricing.states;
+    for (const ticker of repaired) {
+      const state = pricing.find((s) => s.ticker === ticker);
+      const fairValue = COMPANY_MAP.get(ticker)?.fundamentals.fairValue;
+      assert.equal(state?.price, fairValue, `${ticker} must reset to fair value`);
+    }
+  }
 });

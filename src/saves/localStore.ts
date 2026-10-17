@@ -1,5 +1,5 @@
 import Dexie, { Table } from 'dexie';
-import { SaveMeta, SaveGame, SaveGameSchema, saveToMeta, SCHEMA_VERSION, SAVE_SIZE_HARD_LIMIT } from './schema';
+import { SaveMeta, SaveGame, SaveGameSchema, saveToMeta, SCHEMA_VERSION, SAVE_SIZE_HARD_LIMIT, summarizeIssues } from './schema';
 import { migrate, RawSave, rawSchemaVersion, SaveVersionError } from './migrations';
 
 export { SaveVersionError } from './migrations';
@@ -116,7 +116,7 @@ function rowToSave(row: SaveRow): SaveGame {
 
   const migrated = migrate(raw);
   const parsed = SaveGameSchema.safeParse(migrated);
-  if (!parsed.success) throw new SaveCorruptError(parsed.error.message);
+  if (!parsed.success) throw new SaveCorruptError(summarizeIssues(parsed.error));
   return parsed.data;
 }
 

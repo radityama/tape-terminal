@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { SaveGame, SaveGameSchema, SaveMeta, SCHEMA_VERSION, SAVE_SIZE_HARD_LIMIT } from './schema';
+import { SaveGame, SaveGameSchema, SaveMeta, SCHEMA_VERSION, SAVE_SIZE_HARD_LIMIT, summarizeIssues } from './schema';
 import { migrate, RawSave, rawSchemaVersion, SaveVersionError } from './migrations';
 import { PutResult, SaveCorruptError, SaveStore } from './localStore';
 
@@ -62,7 +62,7 @@ export class CloudSaveStore implements SaveStore {
     if (version > SCHEMA_VERSION) throw new SaveVersionError(version, SCHEMA_VERSION);
 
     const parsed = SaveGameSchema.safeParse(migrate(raw));
-    if (!parsed.success) throw new SaveCorruptError(parsed.error.message);
+    if (!parsed.success) throw new SaveCorruptError(summarizeIssues(parsed.error));
     return parsed.data;
   }
 

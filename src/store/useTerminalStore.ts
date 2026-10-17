@@ -515,4 +515,6 @@ saveManager.init({
   },
   restore: (save) => useTerminalStore.getState().restoreFromSave(save),
   onStatus: (status) => useTerminalStore.setState({ saveStatus: status }),
+  onNotice: (message) =>
+    useTerminalStore.getState().addToast({ title: 'Save repaired', message, type: 'warning' }),
 });

@@ -4,17 +4,45 @@ import { z } from 'zod';
 export const SCHEMA_VERSION = 1;
 
 // Anything that is money or a decimal ratio is stored as a string and never as a float.
-// The codec accepts a legacy number or a decimal string on the way in, and always writes a string.
+// The codec accepts a legacy number or a decimal string on the way in, and always writes
+// fixed-point text: scientific notation must never appear on disk.
 const decimalString = z.string().regex(/^-?\d+(\.\d+)?$/);
 
-const moneyAsString = z.codec(z.union([z.number(), decimalString]), z.string(), {
-  decode: (v) => String(v),
+// toFixed switches to exponential notation around 1e21, so values at or above this bound
+// are rejected at the boundary instead of being written in an unreadable form.
+export const MAX_SAVE_DECIMAL = 1e15;
+const FIXED_DECIMALS = 8;
+
+export function decimalStringFromNumber(value: number): string {
+  if (!Number.isFinite(value) || Math.abs(value) >= MAX_SAVE_DECIMAL) {
+    throw new Error(`Refusing to write a non-finite or out-of-range decimal: ${String(value)}`);
+  }
+  const fixed = value.toFixed(FIXED_DECIMALS).replace(/0+$/, '').replace(/\.$/, '');
+  return fixed === '' || fixed === '-' ? '0' : fixed;
+}
+
+// Report at most five zod issues plus a count, never hundreds of copies of the same failure.
+export function summarizeIssues(error: z.ZodError): string {
+  const issues = error.issues;
+  const head = issues
+    .slice(0, 5)
+    .map((issue) => `${issue.path.join('.') || 'save'}: ${issue.message}`)
+    .join('; ');
+  return issues.length > 5 ? `${head} (+${issues.length - 5} more issues)` : head;
+}
+
+const moneyAsString = z.codec(z.union([z.number().finite(), decimalString]), z.string(), {
+  decode: (v) => (typeof v === 'number' ? decimalStringFromNumber(v) : v),
   encode: (v) => v,
 });
 
-const moneyAsNumber = z.codec(z.union([z.number(), decimalString]), z.number(), {
-  decode: (v) => Number(v),
-  encode: (v) => String(v),
+const moneyAsNumber = z.codec(z.union([z.number().finite(), decimalString]), z.number(), {
+  decode: (v) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) throw new Error(`Invalid non-finite decimal: ${String(v)}`);
+    return n;
+  },
+  encode: decimalStringFromNumber,
 });
 
 const optMoney = moneyAsNumber.optional();
@@ -218,6 +246,8 @@ const marketEngineStateSchema = z.object({
   rngState: z.number(),
   // Monotonic counter bumped on sim day advances and player actions; drives the save seq guard.
   actionSeq: z.number().int().min(0).default(0),
+  // Earnings jumps queued at the end of a day and applied on the next price step.
+  activeJumpDeltas: z.array(z.tuple([z.string(), z.number()])).default([]),
   pricing: pricingEngineStateSchema,
   portfolio: portfolioEngineStateSchema,
   career: careerEngineStateSchema,

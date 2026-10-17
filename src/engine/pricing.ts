@@ -11,6 +11,14 @@ export interface Candle {
   volume: number;
 }
 
+// Soft bounds and step limits. A bug can make a price or volatility wrong, never astronomical.
+export const MIN_PRICE_FACTOR = 0.1;
+export const MAX_PRICE_FACTOR = 10;
+export const PRICE_ABSOLUTE_FLOOR = 0.5;
+export const MAX_STEP_RETURN = 0.25;
+export const VOL_FLOOR_MULT = 0.2;
+export const VOL_CEIL_MULT = 10;
+
 export interface AssetPriceState {
   ticker: string;
   price: number;
@@ -49,6 +57,7 @@ export class PricingEngine {
   private states: Map<string, AssetPriceState>;
   private regime: MarketRegime;
   private regimeDurationDays: number = 0;
+  private warnedNonFinite = false;
 
   constructor(rng: SeededRNG, companies: Company[]) {
     this.rng = rng;
@@ -208,13 +217,6 @@ export class PricingEngine {
 
       const shock = factorShocks.get(comp.ticker) ?? 0;
 
-      // 1. GARCH(1,1) Volatility clustering:
-      const omega = 0.05 * (comp.baseVol ** 2);
-      const alpha = 0.12;
-      const beta = 0.83;
-      const nextVariance = omega + alpha * (shock ** 2) * (state.currentVol ** 2) + beta * (state.currentVol ** 2);
-      state.currentVol = Math.sqrt(nextVariance) * config.baseVolMultiplier;
-
       // Accumulate elapsed sim seconds for this symbol
       state.accumulatedSimSeconds += simSecondsElapsed;
 
@@ -238,6 +240,18 @@ export class PricingEngine {
       const nextDelay = -Math.log(u) / currentLambda;
       state.timeUntilNextUpdate = nextDelay;
 
+      // 1. GARCH(1,1) volatility clustering, recursed once per actual price step.
+      // The regime multiplier applies to the step volatility only, never inside the
+      // recursion: compounding it there makes bear/panic volatility explode.
+      const omega = 0.05 * (comp.baseVol ** 2);
+      const alpha = 0.12;
+      const beta = 0.83;
+      const nextVariance = omega + (alpha * (shock ** 2) + beta) * (state.currentVol ** 2);
+      const minVol = comp.baseVol * VOL_FLOOR_MULT;
+      const maxVol = comp.baseVol * VOL_CEIL_MULT;
+      state.currentVol = Math.min(maxVol, Math.max(minVol, Math.sqrt(nextVariance)));
+      const effectiveVol = state.currentVol * config.baseVolMultiplier;
+
       // Aggregate the extra sim time into larger price steps instead of emitting more ticks
       const simSecs = Math.max(1, state.accumulatedSimSeconds);
       state.accumulatedSimSeconds = 0;
@@ -252,19 +266,31 @@ export class PricingEngine {
       const totalDrift = config.marketDriftDaily / 6.5 + meanReversionDrift;
 
       // 4. Volatility diffusion scaled with sqrt(simSecs)
-      const stepVol = (state.currentVol * Math.sqrt(simSecs / (252 * 6.5 * 3600))) * uCurve;
+      const stepVol = (effectiveVol * Math.sqrt(simSecs / (252 * 6.5 * 3600))) * uCurve;
       const diffusion = stepVol * shock;
 
       // 5. Jump shock from news/earnings
       const jump = activeJumpEvents.get(comp.ticker) || 0;
 
-      // Composite percentage return
-      const ret = totalDrift * dt + diffusion + jump;
-      const oldPrice = state.price;
-      const rawNewPrice = Math.max(0.50, oldPrice * (1 + ret));
+      // Composite percentage return, clamped: no single step may explode a price.
+      const composite = totalDrift * dt + diffusion + jump;
+      const ret = Math.max(-MAX_STEP_RETURN, Math.min(MAX_STEP_RETURN, composite));
+      const oldPrice = Number.isFinite(state.price) && state.price > 0 ? state.price : fairValue;
+
+      // 6. Soft bounds relative to fair value, plus an absolute floor.
+      const floor = Math.max(PRICE_ABSOLUTE_FLOOR, fairValue * MIN_PRICE_FACTOR);
+      const ceiling = fairValue * MAX_PRICE_FACTOR;
+      let bounded = oldPrice * (1 + ret);
+      if (!Number.isFinite(bounded)) {
+        if (!this.warnedNonFinite) {
+          console.warn(`Pricing produced a non-finite price for ${comp.ticker}; reset to the last finite price.`);
+          this.warnedNonFinite = true;
+        }
+        bounded = oldPrice;
+      }
 
       // 1. Quantize before comparing: round to asset's tick size ($0.01)
-      const newPrice = Math.round(rawNewPrice * 100) / 100;
+      const newPrice = Math.round(Math.min(ceiling, Math.max(floor, bounded)) * 100) / 100;
       const oldQuantized = Math.round(oldPrice * 100) / 100;
 
       let direction: 'up' | 'down' | 'flat' = 'flat';

@@ -1,4 +1,4 @@
-import { Profile, ProfileSchema, SaveGame, SaveGameSchema, SaveMeta, SCHEMA_VERSION } from './schema';
+import { Profile, ProfileSchema, SaveGame, SaveGameSchema, SaveMeta, SCHEMA_VERSION, summarizeIssues } from './schema';
 import {
   LocalSaveStore,
   PutResult,
@@ -8,7 +8,7 @@ import {
   readProfile,
   writeProfile,
 } from './localStore';
-import { migrate, rawSchemaVersion, RawSave } from './migrations';
+import { consumeSaveRepairs, migrate, rawSchemaVersion, RawSave } from './migrations';
 
 // Plain text shown in the terminal status bar and the Settings save row.
 // Guests only ever see 'saved_locally'.
@@ -50,6 +50,8 @@ export interface SaveManagerHooks {
   restore: (save: SaveGame) => void;
   onStatus?: (status: SaveStatus) => void;
   onConflict?: (conflict: SyncConflict) => void;
+  // One-line player-facing notice, for example when a loaded save had damaged prices repaired.
+  onNotice?: (message: string) => void;
 }
 
 export type LoadOutcome =
@@ -214,6 +216,8 @@ class SaveManagerImpl {
 
   async load(slot: number): Promise<LoadOutcome> {
     try {
+      // Drop repairs recorded by unrelated list or scan decodes before this load.
+      consumeSaveRepairs();
       if (this.cloud && this.baseRevision.get(slot) === undefined) {
         // Prefer the cloud copy when the player has an account and picks a slot.
         const cloudMeta = await this.cloud.getMeta(slot);
@@ -223,6 +227,7 @@ class SaveManagerImpl {
             this.baseRevision.set(slot, cloudMeta.revision);
             this.activeSlot = slot;
             this.hooks?.restore(cloudSave);
+            this.notifyRepairs();
             return { ok: true, save: cloudSave };
           }
         }
@@ -232,11 +237,20 @@ class SaveManagerImpl {
       if (!save) return { ok: false, reason: 'missing' };
       this.activeSlot = slot;
       this.hooks?.restore(save);
+      this.notifyRepairs();
       return { ok: true, save };
     } catch (err) {
       if (err instanceof SaveVersionError) return { ok: false, reason: 'newer', error: err };
       if (err instanceof SaveCorruptError) return { ok: false, reason: 'corrupt', error: err };
       throw err;
+    }
+  }
+
+  // Tell the player once that a damaged price was repaired while loading.
+  private notifyRepairs(): void {
+    const repaired = consumeSaveRepairs();
+    if (repaired.length > 0) {
+      this.hooks?.onNotice?.(`Repaired damaged prices in this save: ${repaired.length} symbols reset to fair value.`);
     }
   }
 
@@ -382,7 +396,7 @@ class SaveManagerImpl {
       return { ok: false, reason: 'invalid', message: err instanceof Error ? err.message : 'Migration failed.' };
     }
     const validated = SaveGameSchema.safeParse(migrated);
-    if (!validated.success) return { ok: false, reason: 'invalid', message: validated.error.message };
+    if (!validated.success) return { ok: false, reason: 'invalid', message: summarizeIssues(validated.error) };
 
     const save = { ...validated.data, deviceId: this.deviceId };
     return this.store.put(save, { expectedRevision: undefined });
