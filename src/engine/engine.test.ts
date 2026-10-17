@@ -199,3 +199,33 @@ test('Watchlist price cell throttle cooldown scales properly with simulation spe
   assert.equal(getCooldown(20), 700, '20x speed cooldown must be 700ms');
 });
 
+test('Simulation output is strictly reproducible for the same seed with the new cadence', () => {
+  const { MarketSimulationEngine } = require('./market.ts');
+  const engine1 = new MarketSimulationEngine('CADENCE_REPRO_SEED', 100000);
+  const engine2 = new MarketSimulationEngine('CADENCE_REPRO_SEED', 100000);
+
+  // Run both engines for 30 ticks across various speeds
+  for (let i = 0; i < 15; i++) {
+    engine1.tick(100);
+    engine2.tick(100);
+  }
+
+  engine1.setSpeed(5);
+  engine2.setSpeed(5);
+
+  for (let i = 0; i < 15; i++) {
+    engine1.tick(100);
+    engine2.tick(100);
+  }
+
+  const snap1 = engine1.getSnapshot();
+  const snap2 = engine2.getSnapshot();
+
+  assert.deepEqual(
+    snap1.prices.map((p: any) => ({ ticker: p.ticker, price: p.price, volume: p.volume, dir: p.direction, lastMove: p.lastMoveDirection })),
+    snap2.prices.map((p: any) => ({ ticker: p.ticker, price: p.price, volume: p.volume, dir: p.direction, lastMove: p.lastMoveDirection })),
+    'Both engines initialized with the same seed must produce identical price and cadence snapshots'
+  );
+});
+
+
