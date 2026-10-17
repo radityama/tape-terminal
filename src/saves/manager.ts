@@ -175,6 +175,25 @@ class SaveManagerImpl {
       this.cloudTimer = null;
     }
     this.updateStatus();
+    // Sign-in can resolve after a local slot was restored. Adopt the cloud revision as the
+    // base when the local copy is at least as new, so the next push updates instead of
+    // reporting a spurious conflict against the player's own save.
+    if (store && this.session.phase === 'ready') void this.adoptCloudBase(this.activeSlot);
+  }
+
+  private async adoptCloudBase(slot: number): Promise<void> {
+    if (!this.cloud) return;
+    try {
+      const remote = await this.cloud.getMeta(slot);
+      if (!remote) return;
+      const local = await this.baseSave(slot);
+      if (local && local.seq >= (remote.seq ?? 0)) {
+        this.baseRevision.set(slot, remote.revision);
+        this.updateStatus();
+      }
+    } catch {
+      // Best effort: the next push falls back to the conflict path.
+    }
   }
 
   hasCloud(): boolean {

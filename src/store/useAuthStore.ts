@@ -40,6 +40,9 @@ const MAGIC_LINK_COOLDOWN_MS = 30000;
 
 let client: SupabaseClient | null = null;
 let initStarted = false;
+// Supabase emits INITIAL_SESSION right after getSession, so this guards against wiring twice
+// and throwing away the sync state (base revisions, status) of the first wire-up.
+let cloudUserId: string | null = null;
 
 function toUser(user: User): AuthUser {
   const providers = Array.isArray(user.app_metadata?.providers)
@@ -77,9 +80,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
     const wireCloud = (user: User | null) => {
       if (user) {
+        if (cloudUserId === user.id) return;
+        cloudUserId = user.id;
         saveManager.setCloudStore(new CloudSaveStore(client as SupabaseClient, user.id));
         void saveManager.syncProfile();
       } else {
+        if (cloudUserId === null && !saveManager.hasCloud()) return;
+        cloudUserId = null;
         saveManager.setCloudStore(null);
       }
     };

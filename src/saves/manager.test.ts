@@ -449,3 +449,44 @@ test('a reload right after a fill restores the trade from local storage', async 
   assert.equal(restored.length, 1);
   assert.equal(restored[0].game.portfolio.positions.length, 1, 'the filled position survives a reload');
 });
+
+test('signing in after a restore adopts the cloud revision so the next push is not a false conflict', async () => {
+  await new LocalSaveStore().put(saveGame(1, 10, 2, 1), { expectedRevision: undefined });
+  const putOpts: Array<{ expectedRevision?: number } | undefined> = [];
+  const cloud = {
+    list: async () => [],
+    get: async () => null,
+    getMeta: async () => ({
+      slot: 1,
+      name: 'Career',
+      seed: 'MGR_TEST',
+      mode: 'career' as const,
+      rank: 'Intern',
+      equity: 100000,
+      simDay: 2,
+      updatedAt: 1700000000000,
+      revision: 5,
+      seq: 8,
+      deviceId: 'other',
+    }),
+    put: async (_save: SaveGame, opts?: { expectedRevision?: number }) => {
+      putOpts.push(opts);
+      return { ok: true as const, revision: 6 };
+    },
+    delete: async () => undefined,
+    getProfile: async () => null,
+    putProfile: async () => undefined,
+  };
+
+  captured = captureFor(12, 3, 1, 'live-engine');
+  await saveManager.bindSession(1, 'live-engine');
+  saveManager.markSessionReady();
+  saveManager.setCloudStore(cloud as never);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  await saveManager.save(1);
+  await saveManager.flushCloudPush();
+
+  assert.deepEqual(putOpts.at(-1), { expectedRevision: 5 }, 'the push must carry the adopted base revision');
+  assert.equal(conflicts.length, 0, 'the player must not see a conflict against their own save');
+});
