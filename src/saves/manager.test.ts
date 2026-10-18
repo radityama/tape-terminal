@@ -338,6 +338,16 @@ test('post-deletion disabled sync requires explicit reactivation', async () => {
   expect(pushes).toBe(1);
 });
 
+test('keep-local revision conflict returns the fresh cloud revision for review', async () => {
+  await new LocalSaveStore().put(saveGame(1, 10, 2, 1));
+  saveManager.setCloudStore({ ...profileCloud().cloud,
+    put: async () => ({ ok: false, reason: 'conflict', remoteRevision: 7 }),
+    getMeta: async () => ({ slot: 1, name: 'Career', seed: 'MGR_TEST', mode: 'career', rank: null, equity: 100000, simDay: 3, updatedAt: 3, revision: 7, deviceId: 'other' }),
+  } as never);
+  expect(await saveManager.keepLocal(1, 5)).toMatchObject({ status: 'conflict', conflict: { remoteRevision: 7, remote: { revision: 7 } } });
+  expect((await new LocalSaveStore().get(1))?.seq).toBe(10);
+});
+
 test('a pause timeout resumes synchronization without claiming that deletion began', async () => {
   let release: ((value: { ok: true; revision: number }) => void) | undefined;
   saveManager.setCloudStore({ ...profileCloud().cloud, getMeta: async () => null,

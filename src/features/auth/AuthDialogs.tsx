@@ -408,7 +408,10 @@ function ConflictDialog() {
       if (action === 'keep') {
         const result = await saveManager.keepLocal(conflict.slot, conflict.remoteRevision);
         if (result.status === 'synced') closeDialog();
-        else setMessage('Could not keep this device copy. Try again.');
+        else if (result.status === 'conflict') {
+          useAuthStore.setState({ conflict: result.conflict });
+          setMessage('The cloud copy changed again. Review its updated details before retrying.');
+        } else setMessage('Could not keep this device copy. Try again.');
       } else if (action === 'use') {
         const result = await saveManager.useCloud(conflict.slot);
         if (result.status === 'synced') closeDialog();

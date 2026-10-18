@@ -124,8 +124,10 @@ test('duplicate deletion submissions share one operation and leave local rows un
 
 test('failed sign-out cleanup keeps the user signed in and shows the failure', async () => {
   fake.failSlot = 1;
+  useAuthStore.setState({ dialog: 'account' });
   await useAuthStore.getState().signOut({ removeCloudSaves: true });
   expect(fake.signOutCalls).toBe(0);
   expect(useAuthStore.getState().signedIn).toBe(true);
-  expect(useAuthStore.getState().error).toMatch(/still signed in/);
+  expect(useAuthStore.getState().dialog).toBe('account');
+  expect(useAuthStore.getState().error).toMatch(/Could not delete cloud save 1.*still signed in/);
 });
