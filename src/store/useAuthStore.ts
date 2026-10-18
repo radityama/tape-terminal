@@ -109,7 +109,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       const user = data.session?.user ?? null;
       wireCloud(user);
       set({ ready: true, hydrationError: false, signedIn: !!user, user: user ? toUser(user) : null });
-    }).catch(() => set({ ready: true, hydrationError: true }));
+    }).catch(() => {
+      if (authEventId === initialEventId) set({ ready: true, hydrationError: true });
+    });
 
     client.auth.onAuthStateChange((event, session) => {
       if (event === 'INITIAL_SESSION') return;
@@ -133,7 +135,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       saveManager.setCloudStore(user ? new CloudSaveStore(client, user.id) : null);
       set({ ready: true, signedIn: !!user, user: user ? toUser(user) : null });
     } catch {
-      set({ ready: true, hydrationError: true });
+      if (authEventId === eventId) set({ ready: true, hydrationError: true });
     }
   },
 
@@ -229,6 +231,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       }
     }
     if (failedSlots.length) return failure(deletedSlots, failedSlots, `Could not delete cloud save ${failedSlots.join(', ')}. Other completed deletions cannot be undone. Cloud sync is paused until you retry or sign out.`);
+    if (get().user?.id !== user.id) return failure(deletedSlots, [], 'The signed-in account changed during deletion. Check the current account before continuing.');
     saveManager.setCloudStore(null);
     return { status: 'success', deletedSlots };
   },
