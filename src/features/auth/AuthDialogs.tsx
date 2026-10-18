@@ -124,6 +124,7 @@ function AccountDialog() {
 
   const [removeOnSignOut, setRemoveOnSignOut] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmationOwner, setConfirmationOwner] = useState<string | null>(null);
   const [confirmEnable, setConfirmEnable] = useState(false);
   const [syncState, setSyncState] = useState(() => saveManager.getCloudSyncState());
   const [cloudCount, setCloudCount] = useState<number | null>(null);
@@ -146,7 +147,7 @@ function AccountDialog() {
   }, []);
 
   useEffect(() => {
-    void Promise.resolve().then(refreshCount);
+    void Promise.resolve().then(() => { setSyncState(saveManager.getCloudSyncState()); void refreshCount(); });
     return () => { operationRef.current += 1; };
   }, [refreshCount, user?.id]);
 
@@ -172,7 +173,7 @@ function AccountDialog() {
     }
   };
 
-  if (confirmDelete && cloudCount !== null) {
+  if (confirmDelete && confirmationOwner === user?.id && cloudCount !== null) {
     return (
       <ConfirmDialog
         title="Delete cloud saves?"
@@ -245,7 +246,7 @@ function AccountDialog() {
           <button
             className="w-full h-[30px] rounded-[2px] border border-[var(--line)] text-[var(--text-1)] text-[12px] flex items-center justify-center space-x-1.5 cursor-pointer hover:bg-[var(--bg-2)] disabled:opacity-50 disabled:cursor-not-allowed"
             disabled={cloudCount === null || loading || deletingCloud}
-            onClick={() => { setDeletionError(null); setConfirmDelete(true); }}
+            onClick={() => { setDeletionError(null); setConfirmationOwner(user?.id ?? null); setConfirmDelete(true); }}
           >
             <Trash size={14} />
             Delete my cloud saves
