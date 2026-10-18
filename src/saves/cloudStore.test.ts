@@ -62,3 +62,22 @@ test('zero rows updated with a missing cloud row does not resurrect a deleted sl
   expect(result).toEqual({ ok: false, reason: 'conflict', remoteRevision: 0 });
   expect(actions).toEqual(['update', 'select']);
 });
+
+test('cloud reads filter by owner and metadata errors are not treated as empty', async () => {
+  const filters: Array<[string, unknown]> = [];
+  let error: { code: string; message: string } | null = null;
+  const query = {
+    eq(key: string, value: unknown) { filters.push([key, value]); return query; },
+    maybeSingle: async () => ({ data: null, error }),
+  };
+  const client = { from: () => ({ select: () => query }) } as unknown as SupabaseClient;
+  const store = new CloudSaveStore(client, 'owner-a');
+  expect(await store.get(2)).toBeNull();
+  expect(filters).toContainEqual(['user_id', 'owner-a']);
+  expect(filters).toContainEqual(['slot', 2]);
+  filters.length = 0;
+  error = { code: 'PGRST001', message: 'provider detail' };
+  await expect(store.getMeta(3)).rejects.toMatchObject({ message: 'Could not inspect the cloud save.', cause: error });
+  expect(filters).toContainEqual(['user_id', 'owner-a']);
+  expect(filters).toContainEqual(['slot', 3]);
+});
