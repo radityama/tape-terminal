@@ -209,6 +209,16 @@ test('keep both retries a failed cloud copy without consuming another local slot
   expect((await new LocalSaveStore().get(1))?.seq).toBe(11);
 });
 
+test('keep both reports a failed local read without creating a duplicate slot', async () => {
+  saveManager.setStore({
+    list: async () => [],
+    get: async () => { throw new Error('local read failed'); },
+    put: async () => ({ ok: true, revision: 1 }),
+    delete: async () => {},
+  });
+  expect(await saveManager.keepBoth(1)).toEqual({ status: 'failed' });
+});
+
 test('capture below the stored seq never overwrites the slot, even for a fully ready session', async () => {
   const store = new LocalSaveStore();
   await store.put(saveGame(1, 40, 2, 1), { expectedRevision: undefined });
