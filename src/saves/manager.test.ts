@@ -298,7 +298,7 @@ test('player actions write local storage immediately and push to cloud debounced
   assert.ok(statuses.includes('synced'), 'after the debounced push succeeds');
 });
 
-test('deletion pauses queued cloud writes so a removed save is not recreated', async () => {
+test('pausing queued cloud writes suppresses the pending push', async () => {
   let pushes = 0;
   const cloud = {
     ...profileCloud().cloud,
