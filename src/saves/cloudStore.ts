@@ -153,7 +153,7 @@ export class CloudSaveStore implements SaveStore {
       .eq('user_id', this.userId)
       .eq('slot', slot)
       .maybeSingle();
-    if (error) throw new Error('Could not inspect the cloud save.');
+    if (error) throw new Error('Could not inspect the cloud save.', { cause: error });
     if (!data) return null;
     const row = data as SaveListRow;
     return {

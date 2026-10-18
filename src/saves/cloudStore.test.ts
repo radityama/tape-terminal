@@ -89,3 +89,22 @@ test('cloud deletion checks returned errors, verifies absence and restricts owne
   remaining = { slot: 2 };
   await expect(store.delete(2)).rejects.toThrow('Cloud save still exists');
 });
+
+test('cloud reads filter by owner and metadata errors are not treated as empty', async () => {
+  const filters: Array<[string, unknown]> = [];
+  let error: { code: string; message: string } | null = null;
+  const query = {
+    eq(key: string, value: unknown) { filters.push([key, value]); return query; },
+    maybeSingle: async () => ({ data: null, error }),
+  };
+  const client = { from: () => ({ select: () => query }) } as unknown as SupabaseClient;
+  const store = new CloudSaveStore(client, 'owner-a');
+  expect(await store.get(2)).toBeNull();
+  expect(filters).toContainEqual(['user_id', 'owner-a']);
+  expect(filters).toContainEqual(['slot', 2]);
+  filters.length = 0;
+  error = { code: 'PGRST001', message: 'provider detail' };
+  await expect(store.getMeta(3)).rejects.toMatchObject({ message: 'Could not inspect the cloud save.', cause: error });
+  expect(filters).toContainEqual(['user_id', 'owner-a']);
+  expect(filters).toContainEqual(['slot', 3]);
+});

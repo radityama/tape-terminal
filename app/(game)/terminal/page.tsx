@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useTerminalStore } from '../../../src/store/useTerminalStore';
 import { WorkspaceLayout } from '../../../src/features/workspace/WorkspaceLayout';
@@ -24,6 +24,21 @@ export default function TerminalPage() {
   const sessionError = useTerminalStore((s) => s.sessionError);
   const setSnapshot = useTerminalStore((s) => s.setSnapshot);
   const lastTickTime = useRef<number>(0);
+  const [retryBusy, setRetryBusy] = useState(false);
+  const retrying = useRef(false);
+
+  const handleRetry = async () => {
+    if (retrying.current) return;
+    retrying.current = true;
+    setRetryBusy(true);
+    try {
+      if (useAuthStore.getState().hydrationError) await useAuthStore.getState().retryHydration();
+      await useTerminalStore.getState().initSession();
+    } finally {
+      retrying.current = false;
+      setRetryBusy(false);
+    }
+  };
 
   // Hydrate the session if not already running: restore the stored slot when present,
   // otherwise start a fresh engine. Autosave only writes once the session is ready.
@@ -127,17 +142,14 @@ export default function TerminalPage() {
     <div className="min-h-[100dvh] w-full bg-[var(--bg-0)] text-[var(--text-1)] overflow-hidden font-sans">
       {sessionPhase !== 'ready' && (
         <main className="min-h-[100dvh] flex items-center justify-center p-6">
-          <div className="max-w-md space-y-4 border border-[var(--line)] bg-[var(--bg-1)] p-5" aria-busy={sessionPhase !== 'recovery'}>
+          <div className="max-w-md space-y-4 rounded-[2px] border border-[var(--line)] bg-[var(--bg-1)] p-5" aria-busy={sessionPhase !== 'recovery' || retryBusy}>
             <h1 className="font-mono text-lg">{sessionPhase === 'recovery' ? 'Save recovery needed' : 'Checking saved game'}</h1>
             {sessionPhase === 'recovery' ? (
               <>
                 <p role="alert" className="text-sm text-[var(--text-2)]">{sessionError}</p>
                 <div className="flex gap-3">
-                  <button type="button" className="border border-[var(--line)] px-3 py-2 focus-visible:outline-2 focus-visible:outline-[var(--accent)]" onClick={() => void (async () => {
-                    if (useAuthStore.getState().hydrationError) await useAuthStore.getState().retryHydration();
-                    await useTerminalStore.getState().initSession();
-                  })()}>Retry</button>
-                  <Link href="/" className="border border-[var(--line)] px-3 py-2 focus-visible:outline-2 focus-visible:outline-[var(--accent)]">Inspect saves</Link>
+                  <button type="button" disabled={retryBusy} className="rounded-[2px] border border-[var(--line)] px-3 py-2 focus-visible:outline-2 focus-visible:outline-[var(--accent)] disabled:opacity-50" onClick={() => void handleRetry()}>{retryBusy ? 'Retrying…' : 'Retry'}</button>
+                  <Link href="/" className="rounded-[2px] border border-[var(--line)] px-3 py-2 focus-visible:outline-2 focus-visible:outline-[var(--accent)]">Inspect saves</Link>
                 </div>
               </>
             ) : <p className="text-sm text-[var(--text-2)]">Checking this device and your account.</p>}
