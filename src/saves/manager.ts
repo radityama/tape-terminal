@@ -5,6 +5,7 @@ import {
   SaveCorruptError,
   SaveStore,
   SaveVersionError,
+  SlotHealth,
   readProfile,
   writeProfile,
 } from './localStore';
@@ -41,6 +42,7 @@ export interface MergedSlot {
   origin: 'local' | 'cloud' | 'both';
   localUpdatedAt?: number;
   cloudUpdatedAt?: number;
+  health: SlotHealth;
 }
 
 export interface SaveManagerHooks {
@@ -126,6 +128,7 @@ class SaveManagerImpl {
   private cloudTimer: ReturnType<typeof setTimeout> | null = null;
   private profileTimer: ReturnType<typeof setTimeout> | null = null;
   private warnedSeqRefusal = false;
+  private cloudPaused = false;
 
   init(hooks: SaveManagerHooks): void {
     this.hooks = hooks;
@@ -160,12 +163,13 @@ class SaveManagerImpl {
     this.updateStatus();
   }
 
-  private sessionReadyForCapture(engineId: string | null): boolean {
-    return this.session.phase === 'ready' && this.session.engineId === engineId && engineId !== null;
+  private sessionReadyForCapture(engineId: string | null, slot = this.activeSlot): boolean {
+    return this.session.phase === 'ready' && this.session.slot === slot && this.session.engineId === engineId && engineId !== null;
   }
 
   setCloudStore(store: CloudSaveAdapter | null): void {
     this.cloud = store;
+    this.cloudPaused = false;
     this.baseRevision.clear();
     this.retryDelay = RETRY_BASE_MS;
     this.lastPushOk = false;
@@ -200,6 +204,25 @@ class SaveManagerImpl {
     return this.cloud !== null;
   }
 
+  async pauseCloudWrites(): Promise<void> {
+    this.cloudPaused = true;
+    this.updateStatus();
+    if (this.cloudTimer) clearTimeout(this.cloudTimer);
+    this.cloudTimer = null;
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
+    const deadline = Date.now() + 10000;
+    while (this.inFlight.size > 0) {
+      if (Date.now() >= deadline) throw new Error('Cloud write is still in progress');
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+
+  resumeCloudWrites(): void {
+    this.cloudPaused = false;
+    this.updateStatus();
+  }
+
   setActiveSlot(slot: number): void {
     this.activeSlot = slot;
   }
@@ -218,27 +241,29 @@ class SaveManagerImpl {
 
   // Merge local and cloud slot lists, newest wins, and label where each came from.
   async listAllSlots(): Promise<MergedSlot[]> {
-    const local = await this.listSlots();
+    const local = this.store instanceof LocalSaveStore
+      ? await this.store.inspectSlots()
+      : (await this.listSlots()).map((meta) => ({ meta, health: 'healthy' as const }));
     const cloud = this.cloud ? await this.cloud.list() : [];
     const merged = new Map<number, MergedSlot>();
 
-    for (const meta of local) {
-      merged.set(meta.slot, { slot: meta.slot, meta, origin: 'local', localUpdatedAt: meta.updatedAt });
+    for (const { meta, health } of local) {
+      merged.set(meta.slot, { slot: meta.slot, meta, health, origin: 'local', localUpdatedAt: meta.updatedAt });
     }
     for (const meta of cloud) {
       const existing = merged.get(meta.slot);
       if (existing) {
         existing.origin = 'both';
         existing.cloudUpdatedAt = meta.updatedAt;
-        if (meta.updatedAt > (existing.localUpdatedAt ?? 0)) existing.meta = meta;
+        if (existing.health === 'healthy' && meta.updatedAt > (existing.localUpdatedAt ?? 0)) existing.meta = meta;
       } else {
-        merged.set(meta.slot, { slot: meta.slot, meta, origin: 'cloud', cloudUpdatedAt: meta.updatedAt });
+        merged.set(meta.slot, { slot: meta.slot, meta, health: 'healthy', origin: 'cloud', cloudUpdatedAt: meta.updatedAt });
       }
     }
     return [...merged.values()].sort((a, b) => b.meta.updatedAt - a.meta.updatedAt);
   }
 
-  async load(slot: number): Promise<LoadOutcome> {
+  async load(slot: number, canApply: () => boolean = () => true): Promise<LoadOutcome> {
     try {
       // Drop repairs recorded by unrelated list or scan decodes before this load.
       consumeSaveRepairs();
@@ -248,6 +273,7 @@ class SaveManagerImpl {
         if (cloudMeta) {
           const cloudSave = await this.cloud.get(slot);
           if (cloudSave) {
+            if (!canApply()) throw new Error('Session changed while loading');
             this.baseRevision.set(slot, cloudMeta.revision);
             this.activeSlot = slot;
             this.hooks?.restore(cloudSave);
@@ -259,6 +285,7 @@ class SaveManagerImpl {
 
       const save = await this.store.get(slot);
       if (!save) return { ok: false, reason: 'missing' };
+      if (!canApply()) throw new Error('Session changed while loading');
       this.activeSlot = slot;
       this.hooks?.restore(save);
       this.notifyRepairs();
@@ -278,13 +305,13 @@ class SaveManagerImpl {
     }
   }
 
-  // Explicitly start a fresh session in a slot: a new game replacing whatever was stored.
-  // The caller must have confirmed with the player; force bypasses the seq guard once.
-  async replaceSlot(
-    slot: number,
-    fields: Omit<CaptureFields, 'engineId'>,
-    game: SaveGame['game']
-  ): Promise<PutResult> {
+  // The caller supplies the revision shown to the player in the replacement dialog.
+  async replaceSlot(slot: number, expectedRevision: number): Promise<PutResult> {
+    const fields = this.hooks?.capture(slot);
+    if (!fields || !this.sessionReadyForCapture(fields.engineId, slot)) {
+      return { ok: false, reason: 'invalid', message: 'No ready session to replace the slot' };
+    }
+    const game = fields.game;
     const now = Date.now();
     const save: Omit<SaveGame, 'game'> = {
       schemaVersion: SCHEMA_VERSION,
@@ -301,9 +328,11 @@ class SaveManagerImpl {
       deviceId: this.deviceId,
       summary: fields.summary,
     };
-    const result = await this.store.put({ ...save, game }, { force: true, expectedRevision: undefined });
+    if (!(this.store instanceof LocalSaveStore)) return { ok: false, reason: 'invalid', message: 'Replacement requires local backup support' };
+    const result = await this.store.replace({ ...save, game }, expectedRevision);
     if (result.ok) {
       this.dirty = true;
+      if (this.inFlight.has(slot)) this.dirtyWhilePushing = true;
       this.updateStatus();
       this.scheduleCloudPush(slot);
     }
@@ -326,7 +355,7 @@ class SaveManagerImpl {
     return local ? local.hasHistory(slot) : false;
   }
 
-  // Best-effort read used as the base for the next write. A damaged save must not block saving a new one.
+  // Reads for display may fail, but writes must never infer an empty slot from a failed read.
   private async baseSave(slot: number): Promise<SaveGame | null> {
     try {
       return await this.store.get(slot);
@@ -358,12 +387,18 @@ class SaveManagerImpl {
   }
 
   async save(slot: number = this.activeSlot, opts?: { force?: boolean }): Promise<PutResult> {
-    const existing = await this.baseSave(slot);
+    if (opts?.force) return { ok: false, reason: 'invalid', message: 'Use confirmed replacement for an occupied slot' };
+    let existing: SaveGame | null;
+    try {
+      existing = await this.store.get(slot);
+    } catch {
+      return { ok: false, reason: 'invalid', message: 'Existing save could not be checked' };
+    }
     const fields = this.hooks?.capture(slot);
     if (!fields) return { ok: false, reason: 'invalid', message: 'there is no active game to save' };
 
     // Hydration gate: never capture during 'loading' or from an engine that is not the bound one.
-    if (!this.sessionReadyForCapture(fields.engineId)) {
+    if (!this.sessionReadyForCapture(fields.engineId, slot)) {
       return { ok: false, reason: 'invalid', message: 'no session is ready to capture' };
     }
 
@@ -372,7 +407,7 @@ class SaveManagerImpl {
 
     // Monotonic seq guard. A stale engine (a fresh title screen engine, an old tab) must
     // never replace newer progress. Explicit player choices use force to bypass this once.
-    if (!opts?.force && existing && save.seq < existing.seq) {
+    if (existing && save.seq < existing.seq) {
       if (!this.warnedSeqRefusal) {
         console.warn('Autosave skipped, it would have replaced newer progress');
         this.warnedSeqRefusal = true;
@@ -381,7 +416,7 @@ class SaveManagerImpl {
       return { ok: false, reason: 'invalid', message: 'Autosave skipped, it would have replaced newer progress' };
     }
 
-    const result = await this.store.put(save, { expectedRevision: existing?.revision, force: opts?.force });
+    const result = await this.store.put(save, { expectedRevision: existing?.revision });
     if (result.ok) {
       this.dirty = true;
       if (this.inFlight.size > 0) this.dirtyWhilePushing = true;
@@ -400,6 +435,10 @@ class SaveManagerImpl {
     const save = await this.baseSave(slot);
     if (!save) return null;
     return JSON.stringify(SaveGameSchema.encode(save), null, 2);
+  }
+
+  async exportRaw(slot: number): Promise<string | null> {
+    return this.store instanceof LocalSaveStore ? this.store.exportRaw(slot) : null;
   }
 
   async importJson(json: string): Promise<PutResult> {
@@ -487,14 +526,23 @@ class SaveManagerImpl {
   // Push one slot to the cloud. Never pushes a slot whose cloud base revision is unknown:
   // a pre-existing cloud row in that case is reported as a conflict for the player to resolve.
   async syncSlot(slot: number = this.activeSlot): Promise<SyncOutcome> {
-    if (!this.cloud) return { status: 'noop' };
+    if (!this.cloud || this.cloudPaused) return { status: 'noop' };
     if (this.inFlight.has(slot)) return { status: 'queued' };
 
-    const local = await this.baseSave(slot);
+    let local: SaveGame | null;
+    try {
+      local = await this.store.get(slot);
+    } catch {
+      this.lastPushFailed = true;
+      this.updateStatus();
+      return { status: 'failed', message: 'Could not read the local save for cloud sync.' };
+    }
     if (!local) return { status: 'noop' };
+    if (this.cloudPaused || !this.cloud) return { status: 'noop' };
 
     this.inFlight.add(slot);
     this.updateStatus();
+    let pushed = false;
     try {
       // Nothing unpushed: do not fire a pointless write.
       if (!this.dirty) return { status: 'noop' };
@@ -503,6 +551,7 @@ class SaveManagerImpl {
 
       if (expected === undefined) {
         const remote = await this.cloud.getMeta(slot);
+        if (this.cloudPaused || !this.cloud) return { status: 'noop' };
         if (remote) {
           this.lastPushFailed = false;
           const conflict: SyncConflict = { slot, remoteRevision: remote.revision, remote };
@@ -514,6 +563,7 @@ class SaveManagerImpl {
       const result = await this.cloud.put(local, expected !== undefined ? { expectedRevision: expected } : undefined);
 
       if (result.ok) {
+        pushed = true;
         this.baseRevision.set(slot, result.revision);
         this.retryDelay = RETRY_BASE_MS;
         this.lastPushOk = true;
@@ -541,6 +591,7 @@ class SaveManagerImpl {
       return { status: 'failed', message: err instanceof Error ? err.message : 'sync failed' };
     } finally {
       this.inFlight.delete(slot);
+      if (pushed && this.dirty && !this.cloudPaused) this.scheduleCloudPush(slot);
       this.updateStatus();
     }
   }
@@ -557,7 +608,12 @@ class SaveManagerImpl {
   // Conflict resolution: keep the local device's copy, overwriting the cloud at the given revision.
   async keepLocal(slot: number, remoteRevision: number): Promise<SyncOutcome> {
     if (!this.cloud) return { status: 'noop' };
-    const local = await this.baseSave(slot);
+    let local: SaveGame | null;
+    try {
+      local = await this.store.get(slot);
+    } catch {
+      return { status: 'failed', message: 'Could not read the local save. The cloud copy was not changed.' };
+    }
     if (!local) return { status: 'noop' };
     const result = await this.cloud.put(local, { expectedRevision: remoteRevision });
     if (result.ok) {
@@ -584,7 +640,11 @@ class SaveManagerImpl {
       const meta = await this.cloud.getMeta(slot);
       const remote = await this.cloud.get(slot);
       if (!remote) return { status: 'noop' };
-      await this.store.put(remote, { expectedRevision: undefined });
+      const local = await this.store.get(slot);
+      const result = local && this.store instanceof LocalSaveStore
+        ? await this.store.replace(remote, local.revision)
+        : await this.store.put(remote);
+      if (!result.ok) return { status: 'failed', message: 'Could not safely preserve the local copy.' };
       if (meta) this.baseRevision.set(slot, meta.revision);
       this.hooks?.restore(remote);
       this.lastPushOk = true;
@@ -600,32 +660,61 @@ class SaveManagerImpl {
   }
 
   // Conflict resolution: keep both by copying this device's copy into a free slot.
-  async keepBoth(slot: number): Promise<{ status: 'kept'; freeSlot: number } | { status: 'full' }> {
-    const used = new Set<number>();
-    for (const meta of await this.listSlots().catch(() => [] as SaveMeta[])) used.add(meta.slot);
-    if (this.cloud) {
-      for (const meta of await this.cloud.list().catch(() => [] as SaveMeta[])) used.add(meta.slot);
-    }
-    const freeSlot = [1, 2, 3].find((s) => !used.has(s));
-    if (freeSlot === undefined) return { status: 'full' };
+  async keepBoth(slot: number): Promise<{ status: 'kept'; freeSlot: number } | { status: 'full' | 'failed' }> {
+    try {
+      const local = await this.store.get(slot);
+      if (!local) return { status: 'failed' };
+      const copyName = `${local.name} (this device)`.slice(0, 40);
+      const localSlots = await this.listSlots();
+      const cloudSlots = this.cloud ? await this.cloud.list() : [];
+      const used = new Set([...localSlots, ...cloudSlots].map((meta) => meta.slot));
+      let freeSlot: number | undefined;
+      let alreadyLocal = false;
 
-    const local = await this.baseSave(slot);
-    if (local) {
-      const copy = { ...local, slot: freeSlot, id: `slot_${freeSlot}`, name: `${local.name} (this device)`.slice(0, 40) };
-      await this.store.put(copy, { expectedRevision: undefined });
-      if (this.cloud) await this.cloud.put(copy, { expectedRevision: undefined });
+      // A previous attempt may have copied locally before the cloud write failed. Reuse
+      // that exact copy on retry rather than filling another slot with a duplicate.
+      for (const meta of localSlots) {
+        if (meta.slot === slot || meta.name !== copyName) continue;
+        const previous = await this.store.get(meta.slot);
+        if (previous && previous.createdAt === local.createdAt && previous.seed === local.seed
+          && previous.seq === local.seq && JSON.stringify(previous.game) === JSON.stringify(local.game)) {
+          freeSlot = meta.slot;
+          alreadyLocal = true;
+          break;
+        }
+      }
+      freeSlot ??= [1, 2, 3].find((candidate) => !used.has(candidate));
+      if (freeSlot === undefined) return { status: 'full' };
+
+      const copy = { ...local, slot: freeSlot, id: `slot_${freeSlot}`, name: copyName };
+      if (!alreadyLocal) {
+        const localResult = await this.store.put(copy);
+        if (!localResult.ok) return { status: 'failed' };
+      }
+      if (this.cloud) {
+        const existing = cloudSlots.some((meta) => meta.slot === freeSlot) ? await this.cloud.get(freeSlot) : null;
+        if (existing && (existing.createdAt !== copy.createdAt || existing.seed !== copy.seed
+          || existing.seq !== copy.seq || JSON.stringify(existing.game) !== JSON.stringify(copy.game))) return { status: 'failed' };
+        if (!existing) {
+          const cloudResult = await this.cloud.put(copy, { expectedRevision: undefined });
+          if (!cloudResult.ok) return { status: 'failed' };
+        }
+      }
+      const loaded = await this.useCloud(slot);
+      if (loaded.status !== 'synced') return { status: 'failed' };
+      return { status: 'kept', freeSlot };
+    } catch {
+      return { status: 'failed' };
     }
-    await this.useCloud(slot);
-    return { status: 'kept', freeSlot };
   }
 
   // Explicit upload used by the claim flow. Overwrites the cloud slot by design.
   async uploadSlot(slot: number): Promise<PutResult> {
-    const local = await this.baseSave(slot);
+    const local = await this.store.get(slot);
     if (!local) return { ok: false, reason: 'invalid', message: 'slot is empty' };
     if (!this.cloud) return { ok: false, reason: 'invalid', message: 'not signed in' };
     // Never push a snapshot whose progress is behind the cloud copy.
-    const remote = await this.cloud.getMeta(slot).catch(() => null);
+    const remote = await this.cloud.getMeta(slot);
     if (remote?.seq != null && local.seq < remote.seq) {
       return { ok: false, reason: 'invalid', message: 'The cloud copy has newer progress than this device.' };
     }
@@ -731,6 +820,7 @@ class SaveManagerImpl {
   // Single source of truth for the footer status. Derived from state, never from the last event.
   private computeStatus(): SaveStatus {
     if (!this.cloud) return 'saved_locally';
+    if (this.cloudPaused) return 'saved_locally';
     if (typeof navigator !== 'undefined' && navigator.onLine === false) return 'offline';
     if (this.cloudTimer !== null || this.inFlight.size > 0) return 'syncing';
     if (this.lastPushFailed) return 'sync_failed';

@@ -117,6 +117,108 @@ test('a failed cloud save listing is not mistaken for empty slots', async () => 
   await expect(saveManager.listAllSlots()).rejects.toThrow('cloud unavailable');
 });
 
+test('a corrupt slot cannot be overwritten by a ready session or force', async () => {
+  await db.savedGames.put({ id: 'slot_1', name: 'Damaged', seed: 'x', mode: 'career', payload: '{' });
+  captured = captureFor(100, 2, 0, 'engine');
+  saveManager.bindSession(1, 'engine');
+  saveManager.markSessionReady();
+  const result = await saveManager.save(1, { force: true });
+  expect(result).toMatchObject({ ok: false, reason: 'invalid' });
+  expect(await saveManager.save(1)).toMatchObject({ ok: false, reason: 'invalid' });
+  expect((await db.savedGames.get('slot_1'))?.payload).toBe('{');
+});
+
+test('replacement needs the reviewed revision and preserves the original raw row', async () => {
+  const original = saveGame(1, 50, 5, 1);
+  await new LocalSaveStore().put(original);
+  captured = captureFor(1, 1, 0, 'new-engine');
+  saveManager.bindSession(1, 'new-engine');
+  saveManager.markSessionReady();
+  expect((await saveManager.replaceSlot(1, 2)).ok).toBe(false);
+  expect((await saveManager.replaceSlot(1, 1)).ok).toBe(true);
+  expect((await new LocalSaveStore().get(1))?.revision).toBe(2);
+  const backup = await db.backups.where('slot').equals(1).first();
+  expect(backup?.payload).toContain('"seq":50');
+});
+
+test('replacement during an in-flight cloud push leaves the new career dirty and pushes it afterward', async () => {
+  let finishFirst: ((result: { ok: true; revision: number }) => void) | undefined;
+  const pushed: number[] = [];
+  saveManager.setCloudStore({
+    ...profileCloud().cloud,
+    getMeta: async () => null,
+    put: async (save: SaveGame) => {
+      pushed.push(save.seq);
+      if (pushed.length === 1) return new Promise((resolve) => { finishFirst = resolve; });
+      return { ok: true, revision: pushed.length };
+    },
+  } as never);
+  captured = captureFor(20, 2, 0, 'first-engine');
+  saveManager.bindSession(1, 'first-engine');
+  saveManager.markSessionReady();
+  expect((await saveManager.save(1)).ok).toBe(true);
+  const firstPush = saveManager.syncSlot(1);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  captured = captureFor(1, 1, 0, 'second-engine');
+  saveManager.bindSession(1, 'second-engine');
+  saveManager.markSessionReady();
+  expect(await saveManager.replaceSlot(1, 1)).toEqual({ ok: true, revision: 2 });
+  finishFirst?.({ ok: true, revision: 1 });
+  await firstPush;
+  expect(await saveManager.flushCloudPush()).toMatchObject({ status: 'synced' });
+  expect(pushed).toEqual([20, 1]);
+});
+
+test('cloud conflict resolution cannot replace a corrupt local row', async () => {
+  await db.savedGames.put({ id: 'slot_1', name: 'Damaged', seed: 'x', mode: 'career', payload: '{' });
+  const remote = saveGame(1, 10, 2, 1);
+  saveManager.setCloudStore({
+    ...profileCloud().cloud,
+    get: async () => remote,
+    getMeta: async () => ({ slot: 1, name: remote.name, seed: remote.seed, mode: remote.mode, rank: null, equity: 100000, simDay: 2, updatedAt: 1, revision: 3, deviceId: 'remote' }),
+  } as never);
+  expect((await saveManager.useCloud(1)).status).toBe('failed');
+  expect((await db.savedGames.get('slot_1'))?.payload).toBe('{');
+});
+
+test('keep both retries a failed cloud copy without consuming another local slot', async () => {
+  const local = saveGame(1, 10, 2, 1);
+  const remote = saveGame(1, 11, 2, 0);
+  await new LocalSaveStore().put(local);
+  let failCopy = true;
+  let cloudCopy: SaveGame | null = null;
+  saveManager.setCloudStore({
+    ...profileCloud().cloud,
+    list: async () => cloudCopy ? [
+      { slot: 1, name: remote.name, seed: remote.seed, mode: remote.mode, rank: null, equity: 100000, simDay: 2, updatedAt: 1, revision: 2, deviceId: remote.deviceId },
+      { slot: 2, name: cloudCopy.name, seed: cloudCopy.seed, mode: cloudCopy.mode, rank: null, equity: 100000, simDay: 2, updatedAt: 1, revision: 1, deviceId: cloudCopy.deviceId },
+    ] : [{ slot: 1, name: remote.name, seed: remote.seed, mode: remote.mode, rank: null, equity: 100000, simDay: 2, updatedAt: 1, revision: 2, deviceId: remote.deviceId }],
+    get: async (slot: number) => slot === 1 ? remote : cloudCopy,
+    getMeta: async () => ({ slot: 1, name: remote.name, seed: remote.seed, mode: remote.mode, rank: null, equity: 100000, simDay: 2, updatedAt: 1, revision: 2, deviceId: remote.deviceId }),
+    put: async (save: SaveGame) => {
+      if (failCopy) return { ok: false, reason: 'invalid', message: 'network' };
+      cloudCopy = save;
+      return { ok: true, revision: 1 };
+    },
+  } as never);
+  expect(await saveManager.keepBoth(1)).toEqual({ status: 'failed' });
+  expect((await new LocalSaveStore().get(2))?.seq).toBe(10);
+  failCopy = false;
+  expect(await saveManager.keepBoth(1)).toEqual({ status: 'kept', freeSlot: 2 });
+  expect(await new LocalSaveStore().get(3)).toBeNull();
+  expect((await new LocalSaveStore().get(1))?.seq).toBe(11);
+});
+
+test('keep both reports a failed local read without creating a duplicate slot', async () => {
+  saveManager.setStore({
+    list: async () => [],
+    get: async () => { throw new Error('local read failed'); },
+    put: async () => ({ ok: true, revision: 1 }),
+    delete: async () => {},
+  });
+  expect(await saveManager.keepBoth(1)).toEqual({ status: 'failed' });
+});
+
 test('capture below the stored seq never overwrites the slot, even for a fully ready session', async () => {
   const store = new LocalSaveStore();
   await store.put(saveGame(1, 40, 2, 1), { expectedRevision: undefined });
@@ -166,6 +268,15 @@ test('an unbound or loading session is not allowed to capture at all', async () 
   assert.equal(stored?.revision, 1);
 });
 
+test('a ready engine cannot silently save over a different slot', async () => {
+  await new LocalSaveStore().put(saveGame(2, 1, 1, 1));
+  captured = captureFor(9, 2, 0, 'engine', 2);
+  saveManager.bindSession(1, 'engine');
+  saveManager.markSessionReady();
+  expect((await saveManager.save(2)).ok).toBe(false);
+  expect((await new LocalSaveStore().get(2))?.game.portfolio.positions.length).toBe(1);
+});
+
 test('player actions write local storage immediately and push to cloud debounced', async () => {
   let cloudPuts = 0;
   const cloud: CloudApi = {
@@ -195,6 +306,24 @@ test('player actions write local storage immediately and push to cloud debounced
   assert.ok(!statuses.includes('synced'), 'push has not happened yet, so not synced');
   await saveManager.flushCloudPush();
   assert.ok(statuses.includes('synced'), 'after the debounced push succeeds');
+});
+
+test('pausing queued cloud writes suppresses the pending push', async () => {
+  let pushes = 0;
+  const cloud = {
+    ...profileCloud().cloud,
+    getMeta: async () => null,
+    put: async () => { pushes += 1; return { ok: true as const, revision: 1 }; },
+  };
+  saveManager.setCloudStore(cloud as never);
+  captured = captureFor(1, 1, 0, 'engine');
+  saveManager.bindSession(1, 'engine');
+  saveManager.markSessionReady();
+  await saveManager.save(1);
+  await saveManager.pauseCloudWrites();
+  expect((await saveManager.flushCloudPush()).status).toBe('noop');
+  expect(pushes).toBe(0);
+  saveManager.setCloudStore(null);
 });
 
 test('the status machine never claims synced while the local copy is dirty', async () => {
