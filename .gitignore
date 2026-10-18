@@ -8,3 +8,10 @@ coverage/
 !.env.example
 .aistudio/
 .freebuff/
+
+# Playwright artifacts and the generated local E2E environment (never commit keys).
+playwright-report/
+test-results/
+blob-report/
+playwright/.cache/
+.env.e2e.local
