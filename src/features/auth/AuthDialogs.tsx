@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   GoogleLogo,
   GithubLogo,
@@ -121,15 +121,16 @@ function AccountDialog() {
 
   const [removeOnSignOut, setRemoveOnSignOut] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [cloudCount, setCloudCount] = useState(0);
+  const [cloudCount, setCloudCount] = useState<number | null>(null);
+  const [listError, setListError] = useState(false);
 
   useEffect(() => {
-    const store = saveManager as unknown as { cloud?: unknown };
-    void store;
-    void saveManager.listAllSlots().then((slots) => setCloudCount(slots.filter((s) => s.cloudUpdatedAt !== undefined).length));
+    void saveManager.listAllSlots()
+      .then((slots) => setCloudCount(slots.filter((s) => s.cloudUpdatedAt !== undefined).length))
+      .catch(() => setListError(true));
   }, []);
 
-  if (confirmDelete) {
+  if (confirmDelete && cloudCount !== null) {
     return (
       <ConfirmDialog
         title="Delete cloud saves?"
@@ -170,6 +171,7 @@ function AccountDialog() {
           <input
             type="checkbox"
             checked={removeOnSignOut}
+            disabled={cloudCount === null}
             onChange={(e) => setRemoveOnSignOut(e.target.checked)}
             className="mt-0.5 accent-[var(--accent)]"
           />
@@ -181,8 +183,14 @@ function AccountDialog() {
         </button>
 
         <div className="pt-2 border-t border-[var(--line)] space-y-2">
+          {listError ? (
+            <p role="alert" className="text-[11px] text-[var(--down)]">
+              Could not check cloud saves. Close and reopen Account to try again.
+            </p>
+          ) : null}
           <button
-            className="w-full h-[30px] rounded-[2px] border border-[var(--line)] text-[var(--text-1)] text-[12px] flex items-center justify-center space-x-1.5 cursor-pointer hover:bg-[var(--bg-2)]"
+            className="w-full h-[30px] rounded-[2px] border border-[var(--line)] text-[var(--text-1)] text-[12px] flex items-center justify-center space-x-1.5 cursor-pointer hover:bg-[var(--bg-2)] disabled:opacity-50 disabled:cursor-not-allowed"
+            disabled={cloudCount === null || loading}
             onClick={() => setConfirmDelete(true)}
           >
             <Trash size={14} />
@@ -196,34 +204,46 @@ function AccountDialog() {
 
 function ClaimSavesDialog() {
   const closeDialog = useAuthStore((s) => s.closeDialog);
-  const [local, setLocal] = useState<SaveMeta[]>([]);
-  const [cloudSlots, setCloudSlots] = useState<Set<number>>(new Set());
+  const [local, setLocal] = useState<SaveMeta[] | null>(null);
+  const [cloudSlots, setCloudSlots] = useState<Set<number> | null>(null);
   const [checked, setChecked] = useState<Set<number>>(new Set());
   const [busy, setBusy] = useState(false);
   const [occupied, setOccupied] = useState<number | null>(null);
+  const [listError, setListError] = useState<string | null>(null);
 
-  useEffect(() => {
-    void saveManager.listSlots().then((slots) => {
-      setLocal(slots);
-      setChecked(new Set(slots.map((s) => s.slot)));
-    });
-    void saveManager.listAllSlots().then((slots) => {
-      setCloudSlots(new Set(slots.filter((s) => s.cloudUpdatedAt !== undefined).map((s) => s.slot)));
-    });
+  const loadSlots = useCallback(async () => {
+    try {
+      const [localSlots, mergedSlots] = await Promise.all([saveManager.listSlots(), saveManager.listAllSlots()]);
+      setLocal(localSlots);
+      setCloudSlots(new Set(mergedSlots.filter((s) => s.cloudUpdatedAt !== undefined).map((s) => s.slot)));
+      setChecked(new Set(localSlots.map((s) => s.slot)));
+      setListError(null);
+    } catch {
+      setLocal(null);
+      setCloudSlots(null);
+      setChecked(new Set());
+      setListError('Could not check local and cloud saves. Try again.');
+    }
   }, []);
 
+  useEffect(() => {
+    void Promise.resolve().then(loadSlots);
+  }, [loadSlots]);
+
   const upload = async () => {
+    if (busy || local === null || cloudSlots === null || listError) return;
     setBusy(true);
     try {
       for (const slot of checked) {
         if (cloudSlots.has(slot)) {
           setOccupied(slot);
-          setBusy(false);
           return;
         }
       }
       for (const slot of checked) await saveManager.uploadSlot(slot);
       closeDialog();
+    } catch {
+      setListError('Could not upload saves. Try again.');
     } finally {
       setBusy(false);
     }
@@ -236,7 +256,9 @@ function ClaimSavesDialog() {
           These saves live on this device only. Choose which ones to upload to your account.
         </p>
 
-        {local.length === 0 ? (
+        {local === null ? (
+          !listError ? <p className="text-[11px] text-[var(--text-3)]">Checking saves...</p> : null
+        ) : local.length === 0 ? (
           <p className="text-[11px] text-[var(--text-3)]">No local saves on this device.</p>
         ) : (
           <ul className="space-y-1">
@@ -259,7 +281,7 @@ function ClaimSavesDialog() {
                 <span className="text-[var(--text-3)] font-mono text-[11px]">
                   Day {save.simDay} | ${Math.round(save.equity).toLocaleString()}
                 </span>
-                {cloudSlots.has(save.slot) ? (
+                {cloudSlots?.has(save.slot) ? (
                   <span className="text-[10px] text-[var(--down)]">Cloud slot in use</span>
                 ) : null}
               </li>
@@ -267,13 +289,36 @@ function ClaimSavesDialog() {
           </ul>
         )}
 
+        {listError ? (
+          <div className="space-y-2">
+            <p role="alert" className="text-[11px] text-[var(--down)]">{listError}</p>
+            <button
+              className={secondaryBtn}
+              onClick={() => {
+                setLocal(null);
+                setCloudSlots(null);
+                setChecked(new Set());
+                setOccupied(null);
+                setListError(null);
+                void loadSlots();
+              }}
+            >
+              Retry
+            </button>
+          </div>
+        ) : null}
+
         {occupied !== null ? (
           <p className="text-[11px] text-[var(--down)]">
             Slot {occupied} already has a cloud save. Open it from the title screen to choose which to keep.
           </p>
         ) : null}
 
-        <button className={primaryBtn} disabled={busy || checked.size === 0} onClick={() => void upload()}>
+        <button
+          className={primaryBtn}
+          disabled={busy || local === null || cloudSlots === null || !!listError || checked.size === 0}
+          onClick={() => void upload()}
+        >
           {busy ? <SpinnerGap size={14} className="animate-spin" /> : <CloudArrowUp size={14} />}
           Upload to my account
         </button>

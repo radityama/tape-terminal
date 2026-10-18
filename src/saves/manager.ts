@@ -218,8 +218,8 @@ class SaveManagerImpl {
 
   // Merge local and cloud slot lists, newest wins, and label where each came from.
   async listAllSlots(): Promise<MergedSlot[]> {
-    const local = await this.listSlots().catch(() => [] as SaveMeta[]);
-    const cloud = this.cloud ? await this.cloud.list().catch(() => [] as SaveMeta[]) : [];
+    const local = await this.listSlots();
+    const cloud = this.cloud ? await this.cloud.list() : [];
     const merged = new Map<number, MergedSlot>();
 
     for (const meta of local) {

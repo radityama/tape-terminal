@@ -10,3 +10,15 @@ export function chooseCareerSlot(occupied: readonly number[]): CareerSlotChoice 
   const empty = CAREER_SLOTS.find((slot) => !taken.has(slot));
   return empty ? { mode: 'auto', slot: empty } : { mode: 'choose' };
 }
+
+// Start requests share this guard so a second click cannot begin another career write.
+export async function runExclusive(inFlight: { current: boolean }, action: () => Promise<void>): Promise<boolean> {
+  if (inFlight.current) return false;
+  inFlight.current = true;
+  try {
+    await action();
+    return true;
+  } finally {
+    inFlight.current = false;
+  }
+}

@@ -98,6 +98,25 @@ beforeEach(async () => {
   install();
 });
 
+test('a failed local save listing is not mistaken for empty slots', async () => {
+  saveManager.setStore({
+    list: async () => { throw new Error('disk unavailable'); },
+    get: async () => null,
+    put: async () => ({ ok: false, reason: 'invalid', message: 'unavailable' }),
+    delete: async () => {},
+  });
+  await expect(saveManager.listAllSlots()).rejects.toThrow('disk unavailable');
+});
+
+test('a failed cloud save listing is not mistaken for empty slots', async () => {
+  await new LocalSaveStore().put(saveGame(1, 10, 2, 0), { expectedRevision: undefined });
+  saveManager.setCloudStore({
+    ...profileCloud().cloud,
+    list: async () => { throw new Error('cloud unavailable'); },
+  } as never);
+  await expect(saveManager.listAllSlots()).rejects.toThrow('cloud unavailable');
+});
+
 test('capture below the stored seq never overwrites the slot, even for a fully ready session', async () => {
   const store = new LocalSaveStore();
   await store.put(saveGame(1, 40, 2, 1), { expectedRevision: undefined });
