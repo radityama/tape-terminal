@@ -84,9 +84,20 @@ set local request.jwt.claim.sub = '';
 set local request.jwt.claims = '{}';
 
 do $$
+declare denied boolean := false;
 begin
-  if (select count(*) from public.saves) <> 0 then raise exception 'Anonymous user can see saves'; end if;
-  if (select count(*) from public.profiles) <> 0 then raise exception 'Anonymous user can see profiles'; end if;
+  begin
+    perform count(*) from public.saves;
+  exception when insufficient_privilege then denied := true;
+  end;
+  if not denied then raise exception 'Anonymous SELECT on saves was not denied'; end if;
+
+  denied := false;
+  begin
+    perform count(*) from public.profiles;
+  exception when insufficient_privilege then denied := true;
+  end;
+  if not denied then raise exception 'Anonymous SELECT on profiles was not denied'; end if;
 end;
 $$;
 

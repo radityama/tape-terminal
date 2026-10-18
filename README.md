@@ -166,11 +166,13 @@ Copy `.env.example` to `.env.local` and set:
 
 Both are safe to expose in the browser; row level security enforces ownership. Without these values the sign-in entry points stay hidden and nothing else changes.
 
+On hosted deployments, set `NEXT_PUBLIC_SITE_URL` to the public app origin, for example `https://tape.example`. Leave it empty for local development; the callback then uses forwarded request headers or the incoming Host header. Add `<origin>/auth/callback` to Supabase Auth redirect URLs. The callback accepts only local redirect paths, including after URL normalization, and shows fixed messages for provider errors.
+
 ### Database
 
-For local testing, run `bunx supabase init` if `supabase/config.toml` is missing, then `bunx supabase start` and `bunx supabase db reset`. Use the API URL and anon key from `bunx supabase status` in `.env.local`. Local magic links arrive in the mail inbox shown by `status`, so local testing does not need SMTP.
+For local testing, run `bunx supabase init` if `supabase/config.toml` is missing, then `bunx supabase start` and `bunx supabase migration up --local` to apply pending migrations without deleting existing saves. Do not reset a database containing saves. Use the API URL and anon key from `bunx supabase status` in `.env.local`. Local magic links arrive in the mail inbox shown by `status`, so local testing does not need SMTP.
 
-The reset applies `supabase/migrations/0001_cloud_saves.sql` (tables `saves` and `profiles`, RLS policies, revision and updated_at triggers, payload size limits). On this disposable local database, set `DATABASE_URL` to the DB URL shown by `bunx supabase status`, then run the isolation assertions with `psql`:
+Migration `0001_cloud_saves.sql` creates the `saves` and `profiles` tables, RLS policies, revision and updated_at triggers, and payload size limits. It retains its historical `create extension if not exists pgcrypto` declaration; the extension is shared and must not be dropped by this feature. Forward migration `0002_tighten_grants.sql` revokes anonymous SELECT on both tables. Against a disposable local database, set `DATABASE_URL` to the DB URL shown by `bunx supabase status`, then run the isolation assertions with `psql`:
 
 ```bash
 psql -X -v ON_ERROR_STOP=1 "$DATABASE_URL" -f supabase/tests/rls_saves.sql
