@@ -31,6 +31,47 @@ export interface Order {
   isBracketChild?: boolean;
 }
 
+export function validOrderValue(shares: number, price: number): boolean {
+  return Number.isSafeInteger(shares)
+    && shares > 0
+    && Number.isFinite(price)
+    && price >= 1e-8 // Save decimals have eight places; smaller prices would reload as zero.
+    && Number.isSafeInteger(Math.round(shares * price * 100));
+}
+
+export function validateOrderInput(order: Pick<Order, 'type' | 'quantity'> & Partial<Pick<Order,
+  'limitPrice' | 'stopPrice' | 'trailingAmount' | 'takeProfitPrice' | 'stopLossPrice'
+>>): string | null {
+  if (!Number.isSafeInteger(order.quantity) || order.quantity <= 0) {
+    return 'Quantity must be a positive whole number of shares.';
+  }
+
+  const required: Record<OrderType, Array<'limitPrice' | 'stopPrice' | 'trailingAmount'>> = {
+    market: [], limit: ['limitPrice'], stop: ['stopPrice'],
+    stop_limit: ['limitPrice', 'stopPrice'], trailing_stop: ['trailingAmount'],
+  };
+  if (!Object.hasOwn(required, order.type)) return 'Unknown order type.';
+  for (const field of required[order.type]) {
+    if (order[field] === undefined) return `${field} is required for ${order.type} orders.`;
+  }
+  for (const field of ['limitPrice', 'stopPrice', 'trailingAmount', 'takeProfitPrice', 'stopLossPrice'] as const) {
+    const price = order[field];
+    if (price !== undefined && !validOrderValue(order.quantity, price)) {
+      return `${field} must be a positive finite price with a representable trade value.`;
+    }
+  }
+  return null;
+}
+
+export function isValidPendingOrder(order: Order): boolean {
+  return !validateOrderInput(order)
+    && Number.isSafeInteger(order.filledQuantity)
+    && order.filledQuantity >= 0
+    && order.filledQuantity < order.quantity
+    && (order.highestPriceObserved === undefined || validOrderValue(1, order.highestPriceObserved))
+    && (order.lowestPriceObserved === undefined || validOrderValue(1, order.lowestPriceObserved));
+}
+
 export interface TradeRecord {
   id: string;
   orderId: string;
@@ -74,6 +115,8 @@ export class OrderMatchingEngine {
     if (order.status !== 'pending' && order.status !== 'partially_filled') {
       return null;
     }
+
+    if (!isValidPendingOrder(order)) return null;
 
     const side = order.side;
 

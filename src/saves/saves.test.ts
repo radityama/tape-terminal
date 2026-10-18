@@ -85,6 +85,34 @@ test('same seed and same actions reproduce identical state after save and load',
   );
 });
 
+test('legacy invalid pending orders remain recoverable but cannot fill after import', () => {
+  const engine = new MarketSimulationEngine('G0_LEGACY_ORDER', 100000);
+  const placed = engine.placeOrder({ ticker: 'HLVG', side: 'buy', type: 'limit', quantity: 2, limitPrice: 100000 });
+  assert.equal(placed.success, true);
+  const second = engine.placeOrder({ ticker: 'VCRX', side: 'buy', type: 'stop_limit', quantity: 2, stopPrice: 1, limitPrice: 100000 });
+  assert.equal(second.success, true);
+  const wire = wireOf(makeSave(engine, 'G0_LEGACY_ORDER'));
+  const orders = (wire as unknown as { game: { openOrders: Array<{ quantity: number; limitPrice?: string }> } }).game.openOrders;
+  orders[0].quantity = -10;
+  delete orders[1].limitPrice;
+
+  const loaded = SaveGameSchema.decode(wire);
+  assert.deepEqual(wireOf(loaded), wire, 'old save fields must round-trip without normalizing the invalid order');
+
+  const restored = new MarketSimulationEngine(loaded.seed, 100000);
+  restored.importState(loaded.game);
+  const before = restored.exportState();
+  restored.tick(0.05);
+
+  assert.deepEqual(restored.exportState().openOrders, before.openOrders, 'invalid pending order is kept, not executed or rewritten');
+  assert.deepEqual(restored.exportState().portfolio, before.portfolio, 'invalid pending order cannot debit cash or create a trade');
+  restored.skipToNextDay();
+  assert.deepEqual(restored.exportState().openOrders, before.openOrders, 'invalid DAY orders remain recoverable after the trading day');
+  assert.equal(restored.cancelOrder(placed.orderId!), true, 'player can dismiss the bad order');
+  assert.equal(restored.cancelOrder(second.orderId!), true);
+  assert.equal(restored.placeOrder({ ticker: 'HLVG', side: 'buy', type: 'market', quantity: 2 }).success, true);
+});
+
 test('corrupted or tampered payloads are rejected without crashing', () => {
   const engine = new MarketSimulationEngine('CORRUPT', 100000);
   for (let i = 0; i < 5; i++) engine.tick(100);
