@@ -10,13 +10,14 @@ const fake = vi.hoisted(() => ({
   failList: false,
   deleteCalls: 0,
   deferredDelete: null as null | Promise<void>,
+  authCallback: null as null | ((event: string, session: unknown) => void),
 }));
 
 vi.mock('../lib/supabase/client', () => ({
   createBrowserSupabase: () => ({
     auth: {
       getSession: async () => ({ data: { session: { user: { id: 'owner', email: 'owner@example.com', app_metadata: {} } } }, error: null }),
-      onAuthStateChange: () => ({ data: { subscription: { unsubscribe() {} } } }),
+      onAuthStateChange: (cb: (event: string, session: unknown) => void) => { fake.authCallback = cb; return { data: { subscription: { unsubscribe() {} } } }; },
       signOut: async () => { fake.signOutCalls += 1; return { error: fake.failSignOut ? { message: 'sign-out failed' } : null }; },
     },
     from: () => ({
@@ -100,6 +101,16 @@ test('failed listing resumes cloud sync without deleting or losing queued local 
   expect(fake.deleteCalls).toBe(0);
 });
 
+test('a same-user auth event during preflight restores active sync without deleting anything', async () => {
+  expect(saveManager.getCloudSyncState()).toBe('active');
+  const deleting = useAuthStore.getState().deleteCloudSaves();
+  fake.authCallback?.('TOKEN_REFRESHED', { user: { id: 'owner', email: 'owner@example.com', app_metadata: {} } });
+  expect(await deleting).toMatchObject({ status: 'failed', deletedSlots: [], failedSlots: [] });
+  expect(fake.deleteCalls).toBe(0);
+  expect([...fake.rows]).toEqual([1, 2]);
+  expect(saveManager.getCloudSyncState()).toBe('active');
+});
+
 test('a failed retry listing cannot resume sync after a partial deletion', async () => {
   fake.failSlot = 2;
   expect(await useAuthStore.getState().deleteCloudSaves()).toMatchObject({ status: 'partial', deletedSlots: [1], failedSlots: [2] });
@@ -114,6 +125,18 @@ test('a failed later deletion inspection cannot re-enable sync after successful 
   expect(await useAuthStore.getState().deleteCloudSaves()).toMatchObject({ status: 'success' });
   fake.failList = true;
   expect(await useAuthStore.getState().deleteCloudSaves()).toMatchObject({ status: 'failed' });
+  expect(saveManager.getCloudSyncState()).toBe('disabled_after_deletion');
+});
+
+test('a failed deletion while disabled names the real way out of the disabled state', async () => {
+  expect(await useAuthStore.getState().deleteCloudSaves()).toMatchObject({ status: 'success' });
+  fake.rows = new Set([3]);
+  fake.failSlot = 3;
+  expect(await useAuthStore.getState().deleteCloudSaves()).toMatchObject({
+    status: 'failed',
+    failedSlots: [3],
+    message: expect.stringMatching(/stays disabled until you enable it again or sign out/),
+  });
   expect(saveManager.getCloudSyncState()).toBe('disabled_after_deletion');
 });
 

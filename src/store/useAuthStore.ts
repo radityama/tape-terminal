@@ -222,7 +222,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     } catch {
       return failure([], [], 'A cloud save is still syncing. Retry deletion in a moment.');
     }
-    if (get().user?.id !== user.id || authEventId !== initialEvent) return failure([], [], 'The signed-in account changed during deletion. Check the current account before continuing.');
+    if (get().user?.id !== user.id || authEventId !== initialEvent) {
+      // Nothing was deleted yet, so a pause that only existed for this attempt must not stay behind.
+      if (previousSyncState === 'active') saveManager.resumeCloudWrites();
+      return failure([], [], 'The signed-in account changed during deletion. Check the current account before continuing.');
+    }
     let slots: number[];
     try {
       slots = (await store.list()).map((save) => save.slot);
@@ -241,7 +245,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         failedSlots.push(slot);
       }
     }
-    if (failedSlots.length) return failure(deletedSlots, failedSlots, `Could not delete cloud save ${failedSlots.join(', ')}. ${deletedSlots.length ? 'Completed deletions cannot be undone. ' : ''}Cloud sync remains ${saveManager.getCloudSyncState() === 'disabled_after_deletion' ? 'disabled' : 'paused'} until you retry or sign out.`);
+    if (failedSlots.length) {
+      const syncNote = saveManager.getCloudSyncState() === 'disabled_after_deletion'
+        ? 'Cloud sync stays disabled until you enable it again or sign out.'
+        : 'Cloud sync stays paused until a retry completes or you sign out.';
+      return failure(deletedSlots, failedSlots, `Could not delete cloud save ${failedSlots.join(', ')}. ${deletedSlots.length ? 'Completed deletions cannot be undone. ' : ''}${syncNote}`);
+    }
     if (get().user?.id !== user.id) return failure(deletedSlots, [], 'The signed-in account changed during deletion. Check the current account before continuing.');
     saveManager.disableCloudWritesAfterDeletion();
     return { status: 'success', deletedSlots };
