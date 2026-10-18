@@ -181,6 +181,34 @@ test('cloud conflict resolution cannot replace a corrupt local row', async () =>
   expect((await db.savedGames.get('slot_1'))?.payload).toBe('{');
 });
 
+test('keep both retries a failed cloud copy without consuming another local slot', async () => {
+  const local = saveGame(1, 10, 2, 1);
+  const remote = saveGame(1, 11, 2, 0);
+  await new LocalSaveStore().put(local);
+  let failCopy = true;
+  let cloudCopy: SaveGame | null = null;
+  saveManager.setCloudStore({
+    ...profileCloud().cloud,
+    list: async () => cloudCopy ? [
+      { slot: 1, name: remote.name, seed: remote.seed, mode: remote.mode, rank: null, equity: 100000, simDay: 2, updatedAt: 1, revision: 2, deviceId: remote.deviceId },
+      { slot: 2, name: cloudCopy.name, seed: cloudCopy.seed, mode: cloudCopy.mode, rank: null, equity: 100000, simDay: 2, updatedAt: 1, revision: 1, deviceId: cloudCopy.deviceId },
+    ] : [{ slot: 1, name: remote.name, seed: remote.seed, mode: remote.mode, rank: null, equity: 100000, simDay: 2, updatedAt: 1, revision: 2, deviceId: remote.deviceId }],
+    get: async (slot: number) => slot === 1 ? remote : cloudCopy,
+    getMeta: async () => ({ slot: 1, name: remote.name, seed: remote.seed, mode: remote.mode, rank: null, equity: 100000, simDay: 2, updatedAt: 1, revision: 2, deviceId: remote.deviceId }),
+    put: async (save: SaveGame) => {
+      if (failCopy) return { ok: false, reason: 'invalid', message: 'network' };
+      cloudCopy = save;
+      return { ok: true, revision: 1 };
+    },
+  } as never);
+  expect(await saveManager.keepBoth(1)).toEqual({ status: 'failed' });
+  expect((await new LocalSaveStore().get(2))?.seq).toBe(10);
+  failCopy = false;
+  expect(await saveManager.keepBoth(1)).toEqual({ status: 'kept', freeSlot: 2 });
+  expect(await new LocalSaveStore().get(3)).toBeNull();
+  expect((await new LocalSaveStore().get(1))?.seq).toBe(11);
+});
+
 test('capture below the stored seq never overwrites the slot, even for a fully ready session', async () => {
   const store = new LocalSaveStore();
   await store.put(saveGame(1, 40, 2, 1), { expectedRevision: undefined });
