@@ -154,8 +154,8 @@ export function CommandBar() {
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 bg-black/75 flex items-start justify-center pt-24 z-50 p-4 font-mono select-none">
-      <div className="bg-[var(--bg-1)] border border-[var(--accent)] rounded-[2px] max-w-lg w-full overflow-hidden shadow-2xl">
+    <div className="fixed inset-0 bg-[var(--bg-0)]/80 flex items-start justify-center pt-24 z-50 p-4 font-mono select-none">
+      <div className="bg-[var(--bg-1)] border border-[var(--accent)] rounded-[2px] max-w-lg w-full overflow-hidden shadow-float">
         {/* Input Field */}
         <div className="flex items-center px-3 border-b border-[var(--line)] bg-[var(--bg-0)] h-10">
           <MagnifyingGlass size={14} weight="bold" className="text-[var(--accent)] mr-2 shrink-0" />

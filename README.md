@@ -2,6 +2,8 @@
 
 TAPE is a professional, browser-based stock trading game and financial terminal. It combines Bloomberg-class information density, realistic market microstructure, and a career progression system. Everything runs client-side with deterministic seeded generation.
 
+Planning, known gaps and deferred work live in [docs/ROADMAP.md](docs/ROADMAP.md).
+
 ---
 
 ## 1. Product Overview
@@ -38,6 +40,7 @@ The player starts as an Intern Trader with a $100,000 cash account. A simulated 
   /(game)/terminal/page.tsx   # Main dockable workspace
   /(game)/layout.tsx
   /page.tsx                   # Title screen with live depth ladder
+proxy.ts                      # Next 16 proxy: refreshes the Supabase session
 /src
   /engine                     # Pure TypeScript, runs without React dependencies
     rng.ts                    # Deterministic seeded PRNG (Mulberry32 + Box-Muller)
@@ -73,13 +76,20 @@ The player starts as an Intern Trader with a $100,000 cash account. A simulated 
     company/                  # Company profile and fundamentals modal
     career/                   # Career rank progression modal
     eod-report/               # End-of-day settlement & coach report
-    settings/                 # Settings, difficulty presets, IndexedDB saves
+    settings/                 # Settings, difficulty presets, save slots
     tutorial/                 # 9-step spotlight walkthrough with guided first trade
   /store
     useTerminalStore.ts       # Granular Zustand store with engine bridge
+    useAuthStore.ts           # Supabase auth state (guest-first)
+  /saves
+    schema.ts                 # Versioned zod save format (money serialized as strings)
+    migrations.ts             # Ordered migrations, refuses newer-version saves
+    localStore.ts             # Dexie IndexedDB backend (LocalSaveStore)
+    cloudStore.ts             # Supabase backend (CloudSaveStore, RLS enforced)
+    manager.ts                # SaveManager: save/load, export/import, autosave, sync
   /lib
     money.ts                  # Decimal high-precision financial math
-    storage.ts                # Dexie IndexedDB save slots & JSON export/import
+    supabase/                 # Browser and server Supabase clients
 ```
 
 ---
@@ -142,3 +152,42 @@ To add Forex, Crypto, ETFs, or Options in Phase 2:
   ```bash
   npm run build
   ```
+
+---
+
+## 7. Accounts and Cloud Saves (optional)
+
+TAPE is guest-first. With no Supabase configured the game runs entirely on local Dexie storage. Configuring Supabase adds email magic-link, GitHub and Google sign-in, cloud backup, and cross-device sync. The service role key is never used in client code.
+
+### Environment
+
+Copy `.env.example` to `.env.local` and set:
+
+- `NEXT_PUBLIC_SUPABASE_URL`
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+
+Both are safe to expose in the browser; row level security enforces ownership. Without these values the sign-in entry points stay hidden and nothing else changes.
+
+On hosted deployments, set `NEXT_PUBLIC_SITE_URL` to the public app origin, for example `https://tape.example`. Leave it empty for local development; the callback then uses forwarded request headers or the incoming Host header. Add `<origin>/auth/callback` to Supabase Auth redirect URLs. The callback accepts only local redirect paths, including after URL normalization, and shows fixed messages for provider errors.
+
+### Database
+
+For local testing, run `bunx supabase init` if `supabase/config.toml` is missing, then `bunx supabase start` and `bunx supabase migration up --local` to apply pending migrations without deleting existing saves. Do not reset a database containing saves. Use the API URL and anon key from `bunx supabase status` in `.env.local`. Local magic links arrive in the mail inbox shown by `status`, so local testing does not need SMTP.
+
+Migration `0001_cloud_saves.sql` creates the `saves` and `profiles` tables, RLS policies, revision and updated_at triggers, and payload size limits. It retains its historical `create extension if not exists pgcrypto` declaration; the extension is shared and must not be dropped by this feature. Forward migration `0002_tighten_grants.sql` revokes anonymous SELECT on both tables. Against a disposable local database, set `DATABASE_URL` to the DB URL shown by `bunx supabase status`, then run the isolation assertions with `psql`:
+
+```bash
+psql -X -v ON_ERROR_STOP=1 "$DATABASE_URL" -f supabase/tests/rls_saves.sql
+```
+
+### Self-hosted auth
+
+Magic links need SMTP. On a self-hosted Supabase auth service:
+
+- Configure SMTP (host, port, user, password, sender) so auth emails send. Magic links do not work without it.
+- Set the Site URL to your deployed origin, and add Redirect URLs for `http://localhost:3000/auth/callback` and `https://your-origin/auth/callback`. Magic links and OAuth both return through `app/auth/callback/route.ts`, which exchanges the code and forwards to `/terminal`.
+- Enable the GitHub and Google providers and paste their client IDs and secrets.
+
+### Session refresh
+
+`proxy.ts` at the project root refreshes the Supabase session on each request (Next 16 renamed Middleware to Proxy).

@@ -26,6 +26,10 @@ export interface RivalTrader {
   currentHoldings: Array<{ ticker: string; shares: number; weightPct: number }>;
 }
 
+export interface RivalEngineState {
+  rivals: RivalTrader[];
+}
+
 export class RivalEngine {
   private rivals: RivalTrader[];
   private rng: SeededRNG;
@@ -150,6 +154,16 @@ export class RivalEngine {
 
   getRivals(): RivalTrader[] {
     return this.rivals;
+  }
+
+  exportState(): RivalEngineState {
+    return {
+      rivals: this.rivals.map((r) => ({ ...r, currentHoldings: r.currentHoldings.map((h) => ({ ...h })) })),
+    };
+  }
+
+  importState(state: RivalEngineState) {
+    this.rivals = state.rivals.map((r) => ({ ...r, currentHoldings: r.currentHoldings.map((h) => ({ ...h })) }));
   }
 
   // Daily rival portfolio rebalancing and performance update

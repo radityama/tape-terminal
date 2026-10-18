@@ -206,7 +206,7 @@ export function SpotlightTutorial() {
       <div
         ref={cardRef}
         style={cardStyle}
-        className="absolute w-[320px] bg-[var(--bg-1)] border border-[var(--accent)] rounded-[2px] p-3.5 shadow-2xl z-50 font-sans"
+        className="absolute w-[320px] bg-[var(--bg-1)] border border-[var(--accent)] rounded-[2px] p-3.5 shadow-float z-50 font-sans"
       >
         <div className="flex justify-between items-center mb-1.5 border-b border-[var(--line)] pb-1.5">
           <span className="font-mono text-[10px] text-[var(--accent)] uppercase font-bold tracking-wider">
@@ -250,7 +250,7 @@ export function SpotlightTutorial() {
             ) : (
               <button
                 onClick={nextStep}
-                className="px-3 py-1 bg-[var(--accent)] hover:brightness-105 text-black font-semibold text-[11px] font-mono rounded-[2px] cursor-pointer flex items-center space-x-1"
+                className="px-3 py-1 bg-[var(--accent)] hover:brightness-105 text-[var(--bg-0)] font-semibold text-[11px] font-mono rounded-[2px] cursor-pointer flex items-center space-x-1"
               >
                 <span>{stepDef.step === STEPS.length ? 'Start trading' : 'Next'}</span>
                 <ArrowRight size={11} weight="bold" />

@@ -2,8 +2,11 @@
 
 import React, { useState, useEffect } from 'react';
 import { useTerminalStore } from '../../store/useTerminalStore';
-import { saveGameSlot, loadGameSlot, listAllSaves, exportSaveJson, importSaveJson, SavedGameState } from '../../lib/storage';
-import { X, FloppyDisk, DownloadSimple, UploadSimple, ArrowClockwise } from '@phosphor-icons/react';
+import { saveManager, LoadOutcome } from '../../saves/manager';
+import { SaveMeta } from '../../saves/schema';
+import { SaveStatusRow } from '../auth/SyncIndicator';
+import { ConfirmDialog, Dialog } from '../dialog/Dialog';
+import { FloppyDisk, DownloadSimple, UploadSimple } from '@phosphor-icons/react';
 
 export function SettingsModal() {
   const activeModal = useTerminalStore((s) => s.activeModal);
@@ -21,54 +24,68 @@ export function SettingsModal() {
   const snapshot = useTerminalStore((s) => s.snapshot);
   const addToast = useTerminalStore((s) => s.addToast);
 
-  const [savesList, setSavesList] = useState<SavedGameState[]>([]);
+  const [savesList, setSavesList] = useState<SaveMeta[]>([]);
   const [customSeed, setCustomSeed] = useState(seed);
   const [importJsonText, setImportJsonText] = useState('');
   const [showImportBox, setShowImportBox] = useState(false);
+  const [pendingSeed, setPendingSeed] = useState<{ seed: string; save: SaveMeta } | null>(null);
+
+  const refreshSlots = () => {
+    saveManager.listSlots().then(setSavesList);
+  };
 
   useEffect(() => {
     if (activeModal === 'settings') {
-      listAllSaves().then(setSavesList);
+      refreshSlots();
     }
   }, [activeModal]);
 
   if (activeModal !== 'settings' || !snapshot) return null;
 
-  const handleManualSave = async (slotId: string) => {
-    const ok = await saveGameSlot(slotId, `Manual Save (${slotId.replace('_', ' ').toUpperCase()})`, {
-      seed,
-      simDay: snapshot.simDay,
-      mode: 'career',
-      equity: snapshot.riskMetrics.netLiquidationValue,
-      cash: snapshot.riskMetrics.cashBalance,
-      positions: snapshot.positions,
-      trades: snapshot.recentTrades,
-      career: snapshot.career,
-    });
+  const loadFailureMessage = (outcome: LoadOutcome) => {
+    if (outcome.ok) return '';
+    if (outcome.reason === 'missing') return 'That save slot is empty.';
+    if (outcome.reason === 'newer') return 'This save was made by a newer version of TAPE. Update to load it.';
+    return 'This save is damaged and was not changed. You can still export the raw file.';
+  };
 
-    if (ok) {
-      addToast({ title: 'Game Saved', message: `Saved progress to ${slotId}.`, type: 'success' });
-      listAllSaves().then(setSavesList);
+  const handleManualSave = async (slot: number) => {
+    const result = await saveManager.save(slot);
+    if (result.ok) {
+      addToast({ title: 'Game Saved', message: `Saved progress to slot ${slot}.`, type: 'success' });
+      refreshSlots();
+    } else {
+      addToast({
+        title: 'Save Failed',
+        message:
+          result.reason === 'too_large'
+            ? 'This save is too large to store.'
+            : result.reason === 'invalid'
+              ? result.message
+              : 'The save changed elsewhere. Reopen the slot and try again.',
+        type: 'error',
+      });
     }
   };
 
-  const handleLoadSave = async (slotId: string) => {
-    const saved = await loadGameSlot(slotId);
-    if (!saved) return;
-
-    initEngine(saved.seed, saved.mode, saved.equity);
-    addToast({ title: 'Game Loaded', message: `Restored session from ${saved.name}.`, type: 'info' });
-    setActiveModal('none');
+  const handleLoadSave = async (slot: number) => {
+    const outcome = await saveManager.load(slot);
+    if (outcome.ok) {
+      addToast({ title: 'Game Loaded', message: `Restored session from ${outcome.save.name}.`, type: 'info' });
+      setActiveModal('none');
+    } else {
+      addToast({ title: 'Load Failed', message: loadFailureMessage(outcome), type: 'error' });
+    }
   };
 
-  const handleExport = async (slotId: string) => {
-    const jsonStr = await exportSaveJson(slotId);
+  const handleExport = async (slot: number) => {
+    const jsonStr = await saveManager.exportJson(slot);
     if (jsonStr) {
       const blob = new Blob([jsonStr], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `tape_save_${slotId}_day${snapshot.simDay}.json`;
+      a.download = `tape_save_slot${slot}_day${snapshot.simDay}.json`;
       a.click();
       URL.revokeObjectURL(url);
     }
@@ -76,41 +93,88 @@ export function SettingsModal() {
 
   const handleImportSubmit = async () => {
     if (!importJsonText.trim()) return;
-    const ok = await importSaveJson(importJsonText);
-    if (ok) {
-      addToast({ title: 'Save Imported', message: 'Imported save file into IndexedDB.', type: 'success' });
+    const result = await saveManager.importJson(importJsonText);
+    if (result.ok) {
+      addToast({ title: 'Save Imported', message: 'Imported save file successfully.', type: 'success' });
       setShowImportBox(false);
       setImportJsonText('');
-      listAllSaves().then(setSavesList);
+      refreshSlots();
     } else {
-      addToast({ title: 'Import Failed', message: 'Invalid JSON save state format.', type: 'error' });
+      addToast({
+        title: 'Import Failed',
+        message:
+          result.reason === 'too_large'
+            ? 'That save is too large to import.'
+            : result.reason === 'invalid'
+              ? result.message
+              : 'Invalid save file.',
+        type: 'error',
+      });
     }
   };
 
-  const handleApplySeed = () => {
-    if (customSeed.trim()) {
-      initEngine(customSeed.trim(), 'career', 100000);
-      addToast({ title: 'Seed Applied', message: `New universe generated with seed: ${customSeed.trim()}.`, type: 'info' });
-      setActiveModal('none');
+  const applySeed = async (seedValue: string) => {
+    const previous = useTerminalStore.getState();
+    const slot = saveManager.getActiveSlot();
+    initEngine(seedValue, 'career', 100000);
+    try {
+      const result = await saveManager.save(slot, { force: true });
+      if (!result.ok) throw new Error('Save failed');
+    } catch {
+      useTerminalStore.setState(previous);
+      if (previous.engineId) {
+        saveManager.bindSession(slot, previous.engineId);
+        saveManager.markSessionReady();
+      } else {
+        saveManager.endSession();
+      }
+      addToast({ title: 'Save Failed', message: 'Could not save the new universe. Your previous save has not been replaced.', type: 'error' });
+      return;
     }
+    addToast({ title: 'Seed Applied', message: `New universe generated with seed: ${seedValue}.`, type: 'info' });
+    setActiveModal('none');
   };
+
+  const handleApplySeed = async () => {
+    const seedValue = customSeed.trim();
+    if (!seedValue) return;
+    let current: SaveMeta | undefined;
+    try {
+      current = (await saveManager.listAllSlots()).find((slot) => slot.slot === saveManager.getActiveSlot())?.meta;
+    } catch {
+      addToast({ title: 'Slot Check Failed', message: 'Could not check your saves. Try again.', type: 'error' });
+      return;
+    }
+    if (current) {
+      setPendingSeed({ seed: seedValue, save: current });
+      return;
+    }
+    await applySeed(seedValue);
+  };
+
+  if (pendingSeed) {
+    const currentSave = pendingSeed.save;
+    return (
+      <ConfirmDialog
+        title="Generate a new universe?"
+        confirmLabel={`Replace ${currentSave.name} (Day ${currentSave.simDay}, $${currentSave.equity.toLocaleString()})`}
+        onCancel={() => setPendingSeed(null)}
+        onConfirm={() => {
+          const seedValue = pendingSeed.seed;
+          setPendingSeed(null);
+          void applySeed(seedValue);
+        }}
+      >
+        <p>
+          A new universe replaces the save in {currentSave.name} (Day {currentSave.simDay}, $
+          {currentSave.equity.toLocaleString()}). This cannot be undone.
+        </p>
+      </ConfirmDialog>
+    );
+  }
 
   return (
-    <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4 font-sans select-none">
-      <div className="bg-[var(--bg-1)] border border-[var(--line-strong)] rounded-[2px] max-w-2xl w-full max-h-[85vh] flex flex-col shadow-2xl overflow-hidden">
-        {/* Header */}
-        <div className="h-10 border-b border-[var(--line)] px-4 flex items-center justify-between bg-[var(--bg-0)] shrink-0">
-          <span className="font-bold font-mono text-[13px] text-[var(--text-1)]">
-            Terminal Settings & Save Slots
-          </span>
-          <button
-            onClick={() => setActiveModal('none')}
-            className="p-1 rounded-[2px] hover:bg-[var(--line)] text-[var(--text-3)] hover:text-[var(--text-1)] cursor-pointer"
-          >
-            <X size={16} weight="bold" />
-          </button>
-        </div>
-
+    <Dialog title="Terminal Settings & Save Slots" onClose={() => setActiveModal('none')} width="max-w-2xl">
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
           {/* Difficulty Preset */}
           <div className="bg-[var(--bg-0)] p-3 border border-[var(--line)] rounded-[2px] space-y-2">
@@ -208,7 +272,7 @@ export function SettingsModal() {
               />
               <button
                 onClick={handleApplySeed}
-                className="px-3 py-1 bg-[var(--accent)] text-black font-semibold font-mono text-[11px] rounded-[2px] cursor-pointer"
+                className="px-3 py-1 bg-[var(--accent)] text-[var(--bg-0)] font-semibold font-mono text-[11px] rounded-[2px] cursor-pointer"
               >
                 Apply Seed & Restart
               </button>
@@ -222,7 +286,7 @@ export function SettingsModal() {
           <div className="bg-[var(--bg-0)] p-3 border border-[var(--line)] rounded-[2px] space-y-3">
             <div className="flex justify-between items-center">
               <label className="text-[10px] uppercase font-mono text-[var(--text-3)]">
-                IndexedDB Save Slots (Auto-Saves Daily)
+                Save Slots (Autosaves daily and on pause)
               </label>
               <button
                 onClick={() => setShowImportBox(!showImportBox)}
@@ -232,6 +296,8 @@ export function SettingsModal() {
                 <span>Import JSON</span>
               </button>
             </div>
+
+            <SaveStatusRow />
 
             {showImportBox && (
               <div className="p-2 bg-[var(--bg-1)] border border-[var(--line)] rounded-[2px] space-y-2">
@@ -251,7 +317,7 @@ export function SettingsModal() {
                   </button>
                   <button
                     onClick={handleImportSubmit}
-                    className="px-3 py-1 bg-[var(--accent)] text-black text-[10px] font-semibold rounded-[2px] cursor-pointer"
+                    className="px-3 py-1 bg-[var(--accent)] text-[var(--bg-0)] text-[10px] font-semibold rounded-[2px] cursor-pointer"
                   >
                     Confirm Import
                   </button>
@@ -260,15 +326,15 @@ export function SettingsModal() {
             )}
 
             <div className="space-y-1.5 font-mono text-[11px]">
-              {['slot_1', 'slot_2', 'slot_3'].map((slotId, idx) => {
-                const existing = savesList.find((s) => s.id === slotId);
+              {[1, 2, 3].map((slot) => {
+                const existing = savesList.find((s) => s.slot === slot);
                 return (
-                  <div key={slotId} className="flex justify-between items-center p-2 bg-[var(--bg-1)] border border-[var(--line)] rounded-[2px]">
+                  <div key={slot} className="flex justify-between items-center p-2 bg-[var(--bg-1)] border border-[var(--line)] rounded-[2px]">
                     <div>
-                      <div className="font-semibold text-[var(--text-1)]">Slot {idx + 1}</div>
+                      <div className="font-semibold text-[var(--text-1)]">Slot {slot}</div>
                       {existing ? (
                         <div className="text-[10px] text-[var(--text-3)]">
-                          Day {existing.simDay} | Equity ${existing.equity.toLocaleString()} | {new Date(existing.savedAt).toLocaleDateString()}
+                          Day {existing.simDay} | Equity ${existing.equity.toLocaleString()} | {new Date(existing.updatedAt).toLocaleDateString()}
                         </div>
                       ) : (
                         <div className="text-[10px] text-[var(--text-3)]">Empty Slot</div>
@@ -277,7 +343,7 @@ export function SettingsModal() {
 
                     <div className="flex items-center space-x-1.5">
                       <button
-                        onClick={() => handleManualSave(slotId)}
+                        onClick={() => handleManualSave(slot)}
                         className="px-2 py-1 bg-[var(--bg-2)] hover:bg-[var(--line)] border border-[var(--line)] rounded-[2px] text-[10px] text-[var(--text-2)] flex items-center space-x-1 cursor-pointer"
                       >
                         <FloppyDisk size={12} weight="bold" />
@@ -287,13 +353,13 @@ export function SettingsModal() {
                       {existing && (
                         <>
                           <button
-                            onClick={() => handleLoadSave(slotId)}
-                            className="px-2 py-1 bg-[var(--accent)] hover:brightness-105 text-black font-semibold rounded-[2px] text-[10px] cursor-pointer"
+                            onClick={() => handleLoadSave(slot)}
+                            className="px-2 py-1 bg-[var(--accent)] hover:brightness-105 text-[var(--bg-0)] font-semibold rounded-[2px] text-[10px] cursor-pointer"
                           >
                             Load
                           </button>
                           <button
-                            onClick={() => handleExport(slotId)}
+                            onClick={() => handleExport(slot)}
                             className="p-1 bg-[var(--bg-2)] hover:bg-[var(--line)] border border-[var(--line)] rounded-[2px] text-[var(--text-2)] cursor-pointer"
                             title="Export to JSON"
                           >
@@ -308,7 +374,6 @@ export function SettingsModal() {
             </div>
           </div>
         </div>
-      </div>
-    </div>
+    </Dialog>
   );
 }

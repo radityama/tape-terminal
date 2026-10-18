@@ -319,7 +319,7 @@ export function WatchlistPanel() {
       {/* Context Menu */}
       {contextMenu && (
         <div
-          className="fixed bg-[var(--bg-2)] border border-[var(--line-strong)] shadow-lg rounded-[2px] py-1 text-[11px] z-50 w-36 font-sans"
+          className="fixed bg-[var(--bg-2)] border border-[var(--line-strong)] shadow-float rounded-[2px] py-1 text-[11px] z-50 w-36 font-sans"
           style={{ top: contextMenu.y, left: contextMenu.x }}
           onClick={(e) => e.stopPropagation()}
         >

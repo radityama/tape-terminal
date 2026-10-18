@@ -55,8 +55,8 @@ export function ScreenerModal() {
   });
 
   return (
-    <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4 font-sans select-none">
-      <div className="bg-[var(--bg-1)] border border-[var(--line-strong)] rounded-[2px] max-w-4xl w-full h-[85vh] flex flex-col shadow-2xl overflow-hidden">
+    <div className="fixed inset-0 bg-[var(--bg-0)]/80 flex items-center justify-center z-50 p-4 font-sans select-none">
+      <div className="bg-[var(--bg-1)] border border-[var(--line-strong)] rounded-[2px] max-w-4xl w-full h-[85vh] flex flex-col shadow-float overflow-hidden">
         {/* Modal Header */}
         <div className="h-10 border-b border-[var(--line)] px-4 flex items-center justify-between bg-[var(--bg-0)] shrink-0">
           <div className="flex items-center space-x-2">
@@ -197,7 +197,7 @@ export function ScreenerModal() {
                           setSelectedTicker(c.ticker);
                           setActiveModal('none');
                         }}
-                        className="px-2 py-0.5 bg-[var(--bg-0)] hover:bg-[var(--accent)] hover:text-black border border-[var(--line)] rounded-[2px] text-[10px] text-[var(--text-1)] cursor-pointer"
+                        className="px-2 py-0.5 bg-[var(--bg-0)] hover:bg-[var(--accent)] hover:text-[var(--bg-0)] border border-[var(--line)] rounded-[2px] text-[10px] text-[var(--text-1)] cursor-pointer"
                       >
                         Chart
                       </button>

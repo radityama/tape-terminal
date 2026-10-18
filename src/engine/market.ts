@@ -1,12 +1,12 @@
 import { COMPANIES, Company, COMPANY_MAP, Sector, SECTORS } from '../data/companies';
-import { CareerEngine } from './career';
+import { CareerEngine, CareerEngineState } from './career';
 import { MarketRegime } from './correlation';
 import { EventGenerator, MarketEvent } from './events';
 import { Order, OrderMatchingEngine, OrderSide, OrderType, TimeInForce, TradeRecord } from './matching';
 import { OrderBookDepth, OrderBookEngine } from './orderbook';
-import { PortfolioEngine, Position, RiskMetrics } from './portfolio';
-import { Candle, PricingEngine } from './pricing';
-import { RivalEngine, RivalTrader } from './rivals';
+import { PortfolioEngine, PortfolioEngineState, Position, RiskMetrics } from './portfolio';
+import { Candle, PricingEngine, PricingEngineState } from './pricing';
+import { RivalEngine, RivalTrader, RivalEngineState } from './rivals';
 import { SeededRNG } from './rng';
 
 export type SimSession = 'pre_market' | 'regular' | 'after_hours' | 'closed';
@@ -69,6 +69,26 @@ export interface MarketSnapshot {
   };
 }
 
+export interface MarketEngineState {
+  seed: string;
+  speed: number;
+  simDay: number;
+  simSecondsOfDay: number;
+  session: SimSession;
+  rngState: number;
+  // Monotonic counter bumped on sim day advances and player actions; drives the save seq guard.
+  actionSeq: number;
+  // Earnings jumps queued at the end of a day and applied on the next price step.
+  activeJumpDeltas: Array<[string, number]>;
+  pricing: PricingEngineState;
+  portfolio: PortfolioEngineState;
+  career: CareerEngineState;
+  rivals: RivalEngineState;
+  openOrders: Order[];
+  activeNews: MarketEvent[];
+  upcomingEarnings: MarketEvent[];
+}
+
 export class MarketSimulationEngine {
   public seed: string;
   private rng: SeededRNG;
@@ -86,6 +106,7 @@ export class MarketSimulationEngine {
   // Time scale factor: 23,400 / 360 = 65 sim seconds per real second at 1x
   private speed: SimSpeed = 1;
   private simDay: number = 1;
+  private actionSeq: number = 0;
   private simSecondsOfDay: number = 9.5 * 3600; // start at 09:30:00 (34,200 seconds)
   private session: SimSession = 'regular';
   private lastRealTimestamp: number = Date.now();
@@ -133,6 +154,54 @@ export class MarketSimulationEngine {
 
   getSpeed(): SimSpeed {
     return this.speed;
+  }
+
+  // Full state snapshot for persistence. Depth cache and EOD reports are derived and not stored.
+  exportState(): MarketEngineState {
+    return {
+      seed: this.seed,
+      speed: this.speed,
+      simDay: this.simDay,
+      simSecondsOfDay: this.simSecondsOfDay,
+      session: this.session,
+      rngState: this.rng.getState(),
+      actionSeq: this.actionSeq,
+      activeJumpDeltas: Array.from(this.activeJumpDeltas.entries()),
+      pricing: this.pricingEngine.exportState(),
+      portfolio: this.portfolioEngine.exportState(),
+      career: this.careerEngine.exportState(),
+      rivals: this.rivalEngine.exportState(),
+      openOrders: Array.from(this.openOrders.values()).map((o) => ({ ...o })),
+      activeNews: this.activeNews.map((n) => ({ ...n })),
+      upcomingEarnings: this.upcomingEarnings.map((n) => ({ ...n })),
+    };
+  }
+
+  importState(state: MarketEngineState) {
+    this.seed = state.seed;
+    this.speed = state.speed as SimSpeed;
+    this.simDay = state.simDay;
+    this.simSecondsOfDay = state.simSecondsOfDay;
+    this.session = state.session;
+    this.pricingEngine.importState(state.pricing);
+    this.portfolioEngine.importState(state.portfolio);
+    this.careerEngine.importState(state.career);
+    this.rivalEngine.importState(state.rivals);
+    this.openOrders = new Map(state.openOrders.map((o) => [o.id, { ...o }]));
+    this.activeNews = state.activeNews.map((n) => ({ ...n }));
+    this.upcomingEarnings = state.upcomingEarnings.map((n) => ({ ...n }));
+    // A jump queued by concludeTradingDay applies on the next tick, so it is real state.
+    this.activeJumpDeltas = new Map(state.activeJumpDeltas ?? []);
+    this.eodReports = [];
+    this.currentEodModal = null;
+    this.depthCache.clear();
+    for (const comp of this.companies) {
+      const s = this.pricingEngine.getState(comp.ticker);
+      if (s) this.depthCache.set(comp.ticker, this.bookEngine.generateDepth(comp, s.price, this.pricingEngine.getRegime()));
+    }
+    // Restore the RNG counter last: rebuilding the derived depth cache above consumes draws.
+    this.rng.setState(state.rngState);
+    this.actionSeq = typeof state.actionSeq === 'number' ? state.actionSeq : 0;
   }
 
   setCallbacks(cbs: {
@@ -207,6 +276,7 @@ export class MarketSimulationEngine {
       this.evaluateOrder(order, depth, priceState.price);
     }
 
+    this.actionSeq += 1;
     return { success: true, orderId };
   }
 
@@ -215,6 +285,7 @@ export class MarketSimulationEngine {
     if (order && order.status === 'pending') {
       order.status = 'cancelled';
       this.openOrders.delete(orderId);
+      this.actionSeq += 1;
       return true;
     }
     return false;
@@ -342,6 +413,7 @@ export class MarketSimulationEngine {
       order.averageFillPrice = fillResult.fillPrice;
       order.commissionPaid = commission;
       this.openOrders.delete(order.id);
+      this.actionSeq += 1;
 
       // First fill achievement
       const ach = this.careerEngine.unlockAchievement('first_fill');
@@ -447,6 +519,7 @@ export class MarketSimulationEngine {
 
     // Reset clock for next trading day
     this.simDay += 1;
+    this.actionSeq += 1;
     this.simSecondsOfDay = 9.5 * 3600; // 09:30:00
     this.pricingEngine.startNewDay(Math.floor(Date.now() / 1000));
     this.portfolioEngine.resetDayStartEquity(risk.netLiquidationValue);

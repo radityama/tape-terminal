@@ -1,20 +1,123 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useTerminalStore } from '../src/store/useTerminalStore';
 import { COMPANIES } from '../src/data/companies';
 import { SCENARIOS, Scenario } from '../src/data/scenarios';
-import { listAllSaves, SavedGameState } from '../src/lib/storage';
+import { saveManager, MergedSlot } from '../src/saves/manager';
+import { loadFailureMessage } from '../src/saves/loadFeedback';
+import { chooseCareerSlot, runExclusive } from '../src/saves/slots';
+import { useAuthStore } from '../src/store/useAuthStore';
+import { AuthDialogs } from '../src/features/auth/AuthDialogs';
+import { Dialog, ConfirmDialog } from '../src/features/dialog/Dialog';
 import { Play, CaretRight, Sliders, Gear, Sparkle, CaretUp, CaretDown, BookOpen } from '@phosphor-icons/react';
+
+function lastUpdatedLabel(updatedAt: number): string {
+  return new Date(updatedAt).toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function ReplaceSlotDialog({
+  slots,
+  onCancel,
+  onReplace,
+}: {
+  slots: MergedSlot[];
+  onCancel: () => void;
+  onReplace: (slot: number) => void;
+}) {
+  const [selected, setSelected] = useState<number | null>(null);
+  const descriptionId = useId();
+  const chosen = slots.find((slot) => slot.slot === selected) ?? null;
+
+  return (
+    <Dialog title="All save slots are full" onClose={onCancel} descriptionId={descriptionId} destructive>
+      <div className="p-4 space-y-3 font-mono text-[11px]">
+        <p id={descriptionId} className="text-[var(--text-2)] leading-relaxed">
+          Starting a new career replaces one of your saves. Choose the slot to replace.
+        </p>
+        <div role="radiogroup" aria-label="Slot to replace" className="space-y-1">
+          {slots.map((slot) => (
+            <label
+              key={slot.slot}
+              className={`flex items-start gap-2 p-2 border rounded-[2px] cursor-pointer ${
+                selected === slot.slot
+                  ? 'border-[var(--text-2)] bg-[var(--bg-2)]'
+                  : 'border-[var(--line)] bg-[var(--bg-0)] hover:border-[var(--line-strong)]'
+              }`}
+            >
+              <input
+                type="radio"
+                name="replace-slot"
+                checked={selected === slot.slot}
+                onChange={() => setSelected(slot.slot)}
+                className="mt-0.5"
+              />
+              <span>
+                <span className="block font-semibold text-[var(--text-1)]">{slot.meta.name}</span>
+                <span className="block text-[10px] text-[var(--text-2)]">
+                  Day {slot.meta.simDay} | {slot.meta.rank ?? 'Unranked'} | ${slot.meta.equity.toLocaleString()} | Updated{' '}
+                  {lastUpdatedLabel(slot.meta.updatedAt)}
+                </span>
+              </span>
+            </label>
+          ))}
+        </div>
+      </div>
+      <div className="px-4 pb-4 flex justify-end gap-2">
+        <button
+          type="button"
+          data-autofocus
+          onClick={onCancel}
+          className="h-[30px] px-3 rounded-[2px] bg-[var(--bg-2)] border border-[var(--line)] text-[12px] text-[var(--text-1)] hover:bg-[var(--line)] cursor-pointer"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          disabled={!chosen}
+          onClick={() => chosen && onReplace(chosen.slot)}
+          className="h-[30px] px-3 rounded-[2px] bg-[var(--accent)] text-[var(--bg-0)] text-[12px] font-medium hover:brightness-110 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+        >
+          {chosen
+            ? `Replace ${chosen.meta.name} (Day ${chosen.meta.simDay}, $${chosen.meta.equity.toLocaleString()})`
+            : 'Choose a slot to replace'}
+        </button>
+      </div>
+    </Dialog>
+  );
+}
 
 export default function TitlePage() {
   const router = useRouter();
   const initEngine = useTerminalStore((s) => s.initEngine);
   const startScenario = useTerminalStore((s) => s.startScenario);
   const restartTutorial = useTerminalStore((s) => s.restartTutorial);
+  const authConfigured = useAuthStore((s) => s.configured);
+  const authReady = useAuthStore((s) => s.ready);
+  const authSignedIn = useAuthStore((s) => s.signedIn);
+  const authUser = useAuthStore((s) => s.user);
+  const openAuthDialog = useAuthStore((s) => s.openDialog);
 
-  const [saves, setSaves] = useState<SavedGameState[]>([]);
+  const [slots, setSlots] = useState<MergedSlot[]>([]);
+  const [slotsReady, setSlotsReady] = useState(false);
+  const [listError, setListError] = useState<string | null>(null);
+  const [slotError, setSlotError] = useState<{
+    slot: number;
+    kind: 'resume' | 'restore';
+    message: string;
+  } | null>(null);
+  const [startError, setStartError] = useState<string | null>(null);
+  const [starting, setStarting] = useState(false);
+  const inFlight = useRef(false);
+  const [historySlots, setHistorySlots] = useState<number[]>([]);
+  const [showReplaceDialog, setShowReplaceDialog] = useState(false);
+  const [restoreTarget, setRestoreTarget] = useState<MergedSlot | null>(null);
   const [selectedScenario, setSelectedScenario] = useState<Scenario | null>(null);
   const [showScenarioModal, setShowScenarioModal] = useState(false);
   const [seedInput, setSeedInput] = useState('TAPE_1337');
@@ -31,19 +134,7 @@ export default function TitlePage() {
   );
 
   useEffect(() => {
-    // Check for ?autostart=1
-    if (typeof window !== 'undefined') {
-      const params = new URLSearchParams(window.location.search);
-      if (params.get('autostart') === '1') {
-        initEngine('TAPE_1337', 'career', 100000);
-        router.push('/terminal');
-        return;
-      }
-    }
-
-    listAllSaves().then(setSaves);
-
-    // Muted background tick loop for title screen price ladder
+    // Decorative preview only; saved market prices come from the seeded simulation.
     const interval = setInterval(() => {
       setLadderPrices((prev) =>
         prev.map((item) => {
@@ -59,19 +150,134 @@ export default function TitlePage() {
     }, 1500);
 
     return () => clearInterval(interval);
-  }, [initEngine, router]);
+  }, []);
 
-  const handleStartCareer = () => {
+  // Resolve the account before showing cloud slots, so the list never jumps from local to cloud.
+  useEffect(() => {
+    useAuthStore.getState().init();
+  }, []);
+
+  const loadSlots = useCallback(async (isActive?: () => boolean) => {
+    const active = () => isActive?.() ?? true;
+    if (!active()) return;
+    setListError(null);
+    setSlotsReady(false);
+    try {
+      const list = await saveManager.listAllSlots();
+      if (!active()) return;
+      const withHistory = await Promise.all(
+        list.map((slot) => saveManager.hasHistory(slot.slot).then((has) => (has ? slot.slot : null)))
+      );
+      if (!active()) return;
+      setSlots(list);
+      setHistorySlots(withHistory.filter((slot): slot is number => slot !== null));
+      setSlotsReady(true);
+      setSlotError(null);
+    } catch {
+      if (!active()) return;
+      setListError('Could not check save slots.');
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!authReady) return;
+    let cancelled = false;
+    void Promise.resolve().then(() => loadSlots(() => !cancelled));
+    return () => {
+      cancelled = true;
+    };
+  }, [authReady, authSignedIn, loadSlots]);
+
+  const startCareer = async (slot: number) => {
+    const previous = useTerminalStore.getState();
+    const previousSlot = saveManager.getActiveSlot();
+    saveManager.setActiveSlot(slot);
     initEngine(seedInput || 'TAPE_1337', 'career', 100000);
+    try {
+      // Explicit choice: replace the slot even though its seq is higher than a fresh career.
+      const result = await saveManager.save(slot, { force: true });
+      if (!result.ok) throw new Error('Save failed');
+    } catch {
+      useTerminalStore.setState(previous);
+      if (previous.engineId) {
+        saveManager.bindSession(previousSlot, previous.engineId);
+        saveManager.markSessionReady();
+      } else {
+        saveManager.endSession();
+        saveManager.setActiveSlot(previousSlot);
+      }
+      setStartError('Could not create the career. Your existing save has not been replaced.');
+      return;
+    }
     // Trigger tutorial on first career start
     useTerminalStore.getState().setDifficulty(difficultySelect);
     useTerminalStore.getState().restartTutorial();
     router.push('/terminal');
   };
 
-  const handleContinue = (save: SavedGameState) => {
-    initEngine(save.seed, save.mode, save.equity);
-    router.push('/terminal');
+  const runStart = (action: () => Promise<void>) =>
+    runExclusive(inFlight, async () => {
+      setStarting(true);
+      try {
+        await action();
+      } finally {
+        setStarting(false);
+      }
+    });
+
+  const handleStartCareer = async () => {
+    await runStart(async () => {
+      setStartError(null);
+      try {
+        // Recheck before writing so an unresolved or recently synced cloud slot is never silently replaced.
+        const current = await saveManager.listAllSlots();
+        setSlots(current);
+        const choice = chooseCareerSlot(current.map((slot) => slot.slot));
+        if (choice.mode === 'auto') {
+          await startCareer(choice.slot);
+          return;
+        }
+        setShowReplaceDialog(true);
+      } catch {
+        setStartError('Could not check save slots. Try again.');
+      }
+    });
+  };
+
+  const handleRestoreAutosave = (slot: number) => {
+    setSlotError(null);
+    setRestoreTarget(slots.find((entry) => entry.slot === slot) ?? null);
+  };
+
+  const confirmRestore = async () => {
+    if (!restoreTarget) return;
+    const slot = restoreTarget.slot;
+    setSlotError(null);
+    try {
+      const ok = await saveManager.restoreHistory(slot);
+      setRestoreTarget(null);
+      if (ok) {
+        router.push('/terminal');
+        return;
+      }
+    } catch {
+      setRestoreTarget(null);
+    }
+    setSlotError({ slot, kind: 'restore', message: 'The previous autosave could not be restored.' });
+  };
+
+  const handleContinue = async (save: MergedSlot) => {
+    setSlotError(null);
+    try {
+      const outcome = await saveManager.load(save.slot);
+      if (outcome.ok) {
+        router.push('/terminal');
+        return;
+      }
+      setSlotError({ slot: save.slot, kind: 'resume', message: loadFailureMessage(outcome) });
+    } catch {
+      setSlotError({ slot: save.slot, kind: 'resume', message: 'This save could not be loaded. Try again.' });
+    }
   };
 
   const handleLaunchScenario = (sc: Scenario) => {
@@ -81,7 +287,28 @@ export default function TitlePage() {
   };
 
   return (
-    <main className="min-h-[100dvh] w-full bg-[var(--bg-0)] text-[var(--text-1)] flex items-center justify-center p-6 select-none font-sans">
+    <main className="relative min-h-[100dvh] w-full bg-[var(--bg-0)] text-[var(--text-1)] flex items-center justify-center p-6 select-none font-sans">
+      {authConfigured && (
+        <div className="absolute top-6 right-6 font-mono text-[11px]">
+          {!authReady ? (
+            <span className="text-[var(--text-3)]">Checking account...</span>
+          ) : authSignedIn ? (
+            <button
+              onClick={() => openAuthDialog('account')}
+              className="text-[var(--text-2)] hover:text-[var(--text-1)] cursor-pointer"
+            >
+              {authUser?.email ?? 'Account'}
+            </button>
+          ) : (
+            <button
+              onClick={() => openAuthDialog('signin')}
+              className="text-[var(--text-1)] underline decoration-[var(--text-3)] underline-offset-2 hover:decoration-[var(--text-1)] cursor-pointer"
+            >
+              Sign in
+            </button>
+          )}
+        </div>
+      )}
       <div className="max-w-5xl w-full grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
         {/* Left: Minimal Product & Career Launcher (7 cols) */}
         <div className="lg:col-span-7 space-y-6">
@@ -89,9 +316,6 @@ export default function TitlePage() {
             <div className="flex items-center space-x-2">
               <span className="font-mono text-[11px] font-bold tracking-wider uppercase text-[var(--accent)] bg-[var(--bg-2)] border border-[var(--line)] px-2 py-0.5 rounded-[2px]">
                 STOCKS EDITION
-              </span>
-              <span className="text-[11px] font-mono text-[var(--text-3)]">
-                CLIENT-SIDE SIMULATION
               </span>
             </div>
 
@@ -108,7 +332,7 @@ export default function TitlePage() {
           <div className="bg-[var(--bg-1)] p-4 border border-[var(--line)] rounded-[2px] space-y-3 font-mono text-[12px] max-w-md">
             <div>
               <label className="text-[10px] uppercase text-[var(--text-3)] block mb-1">
-                Universe Seed
+                Universe seed
               </label>
               <input
                 type="text"
@@ -121,7 +345,7 @@ export default function TitlePage() {
 
             <div>
               <label className="text-[10px] uppercase text-[var(--text-3)] block mb-1">
-                Difficulty Preset
+                Difficulty preset
               </label>
               <div className="grid grid-cols-3 gap-1">
                 {(['learner', 'standard', 'hardcore'] as const).map((d) => (
@@ -130,7 +354,7 @@ export default function TitlePage() {
                     onClick={() => setDifficultySelect(d)}
                     className={`py-1 text-center capitalize rounded-[2px] border text-[11px] cursor-pointer transition-colors ${
                       difficultySelect === d
-                        ? 'bg-[var(--accent)] text-black font-semibold border-[var(--accent)]'
+                        ? 'bg-[var(--accent)] text-[var(--bg-0)] font-semibold border-[var(--accent)]'
                         : 'bg-[var(--bg-0)] text-[var(--text-3)] border-[var(--line)] hover:text-[var(--text-1)]'
                     }`}
                   >
@@ -143,12 +367,14 @@ export default function TitlePage() {
             {/* Launch Buttons */}
             <div className="pt-2 flex flex-col space-y-2">
               <button
-                onClick={handleStartCareer}
-                className="w-full py-2.5 bg-[var(--accent)] hover:brightness-105 active:translate-y-[1px] text-black font-bold text-[13px] rounded-[2px] flex items-center justify-center space-x-2 cursor-pointer transition-all"
+                onClick={() => void handleStartCareer()}
+                disabled={starting || !authReady || !slotsReady}
+                className="w-full py-2.5 bg-[var(--accent)] hover:brightness-105 active:translate-y-[1px] text-[var(--bg-0)] font-bold text-[13px] rounded-[2px] flex items-center justify-center space-x-2 cursor-pointer transition-all disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                <span>Start New Career ($100k)</span>
+                <span>{starting ? 'Creating career...' : 'Start New Career ($100k)'}</span>
                 <CaretRight size={14} weight="bold" />
               </button>
+              {startError && <p role="alert" className="text-[11px] text-[var(--text-1)]">{startError}</p>}
 
               <button
                 onClick={() => setShowScenarioModal(true)}
@@ -160,41 +386,97 @@ export default function TitlePage() {
           </div>
 
           {/* Continue Save Slots if available */}
-          {saves.length > 0 && (
+          {!authReady || (!slotsReady && !listError) ? (
+            <div className="max-w-md space-y-2 font-mono text-[11px]" aria-busy="true">
+              <div className="text-[10px] uppercase text-[var(--text-3)]">
+                Existing Save Slots
+              </div>
+              <div className="w-full p-2 bg-[var(--bg-1)] border border-[var(--line)] rounded-[2px]">
+                <div className="h-3 w-32 bg-[var(--line)] rounded-[2px] animate-pulse" />
+                <div className="h-2 w-48 bg-[var(--line)] rounded-[2px] mt-2 animate-pulse" />
+                <div className="text-[10px] text-[var(--text-3)] mt-2">Checking account...</div>
+              </div>
+            </div>
+          ) : listError ? (
+            <div className="max-w-md space-y-2 font-mono text-[11px]">
+              <div className="text-[10px] uppercase text-[var(--text-3)]">
+                Existing Save Slots
+              </div>
+              <div className="w-full p-2 bg-[var(--bg-1)] border border-[var(--line)] rounded-[2px] space-y-2">
+                <p role="alert" className="text-[var(--text-1)]">{listError}</p>
+                <button
+                  type="button"
+                  onClick={() => void loadSlots()}
+                  className="h-[24px] px-2 rounded-[2px] bg-[var(--bg-2)] border border-[var(--line)] text-[10px] text-[var(--text-1)] hover:bg-[var(--line)] cursor-pointer"
+                >
+                  Retry
+                </button>
+              </div>
+            </div>
+          ) : slots.length > 0 ? (
             <div className="max-w-md space-y-2 font-mono text-[11px]">
               <div className="text-[10px] uppercase text-[var(--text-3)]">
                 Existing Save Slots
               </div>
               <div className="space-y-1">
-                {saves.slice(0, 2).map((s) => (
-                  <button
-                    key={s.id}
-                    onClick={() => handleContinue(s)}
-                    className="w-full p-2 bg-[var(--bg-1)] hover:bg-[var(--bg-2)] border border-[var(--line)] rounded-[2px] flex items-center justify-between text-left cursor-pointer transition-colors"
-                  >
-                    <div>
-                      <div className="font-semibold text-[var(--text-1)]">{s.name}</div>
-                      <div className="text-[10px] text-[var(--text-3)]">
-                        Day {s.simDay} | Net Equity ${s.equity.toLocaleString()}
-                      </div>
+                {slots.slice(0, 3).map((slot) => {
+                  const rowError = slotError?.slot === slot.slot ? slotError : null;
+                  return (
+                    <div key={slot.slot} className="bg-[var(--bg-1)] border border-[var(--line)] rounded-[2px]">
+                      <button
+                        type="button"
+                        onClick={() => void handleContinue(slot)}
+                        className="w-full p-2 hover:bg-[var(--bg-2)] flex items-center justify-between text-left cursor-pointer transition-colors"
+                      >
+                        <div>
+                          <div className="font-semibold text-[var(--text-1)]">
+                            {slot.meta.name}
+                            <span className="text-[10px] text-[var(--text-3)] pl-2">
+                              {slot.origin === 'both' ? 'Both' : slot.origin === 'cloud' ? 'Cloud' : 'This device'}
+                            </span>
+                          </div>
+                          <div className="text-[10px] text-[var(--text-3)]">
+                            Day {slot.meta.simDay} | Net Equity ${slot.meta.equity.toLocaleString()}
+                          </div>
+                        </div>
+                        <span className="text-[var(--accent)] text-[10px]">Resume &rarr;</span>
+                      </button>
+                      {historySlots.includes(slot.slot) && (
+                        <button
+                          type="button"
+                          onClick={() => handleRestoreAutosave(slot.slot)}
+                          className="block ml-2 mb-2 text-[10px] text-[var(--text-2)] hover:text-[var(--text-1)] cursor-pointer underline"
+                        >
+                          Restore previous autosave
+                        </button>
+                      )}
+                      {rowError && (
+                        <div className="px-2 pb-2 space-y-1">
+                          <p role="alert" className="text-[10px] text-[var(--text-1)]">{rowError.message}</p>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              rowError.kind === 'resume' ? void handleContinue(slot) : handleRestoreAutosave(slot.slot)
+                            }
+                            className="h-[24px] px-2 rounded-[2px] bg-[var(--bg-2)] border border-[var(--line)] text-[10px] text-[var(--text-1)] hover:bg-[var(--line)] cursor-pointer"
+                          >
+                            Retry
+                          </button>
+                        </div>
+                      )}
                     </div>
-                    <span className="text-[var(--accent)] text-[10px]">Resume &rarr;</span>
-                  </button>
-                ))}
+                  );
+                })}
               </div>
             </div>
-          )}
+          ) : null}
         </div>
 
         {/* Right: Live Simulated Price Ladder (5 cols) */}
-        <div className="lg:col-span-5 bg-[var(--bg-1)] border border-[var(--line)] rounded-[2px] p-3 shadow-2xl font-mono text-[11px]">
-          <div className="flex justify-between items-center border-b border-[var(--line)] pb-2 mb-2">
+        <div className="lg:col-span-5 bg-[var(--bg-1)] border border-[var(--line)] rounded-[2px] p-3 shadow-float font-mono text-[11px]">
+          <div className="flex items-center border-b border-[var(--line)] pb-2 mb-2">
             <span className="text-[10px] uppercase text-[var(--text-3)] tracking-wider">
               Market Depth Tape (Live Tick)
-            </span>
-            <span className="text-[10px] text-[var(--up)] flex items-center space-x-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-[var(--up)]" />
-              <span>SYNCHRONIZED</span>
             </span>
           </div>
 
@@ -224,26 +506,14 @@ export default function TitlePage() {
 
       {/* Scenarios Modal */}
       {showScenarioModal && (
-        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4 font-sans select-none">
-          <div className="bg-[var(--bg-1)] border border-[var(--line-strong)] rounded-[2px] max-w-xl w-full p-4 space-y-3 font-mono text-[11px] shadow-2xl">
-            <div className="flex justify-between items-center border-b border-[var(--line)] pb-2">
-              <span className="font-bold text-[13px] text-[var(--text-1)]">
-                Hand-Authored Historical Scenarios
-              </span>
-              <button
-                onClick={() => setShowScenarioModal(false)}
-                className="text-[var(--text-3)] hover:text-[var(--text-1)] cursor-pointer"
-              >
-                Close
-              </button>
-            </div>
-
-            <div className="space-y-2 max-h-96 overflow-y-auto">
+        <Dialog title="Hand-Authored Historical Scenarios" width="max-w-xl" onClose={() => setShowScenarioModal(false)}>
+            <div className="space-y-2 max-h-96 overflow-y-auto p-4 font-mono text-[11px]">
               {SCENARIOS.map((sc) => (
-                <div
+                <button
+                  type="button"
                   key={sc.id}
                   onClick={() => handleLaunchScenario(sc)}
-                  className="p-3 bg-[var(--bg-0)] hover:bg-[var(--bg-2)] border border-[var(--line)] rounded-[2px] cursor-pointer transition-colors space-y-1.5"
+                  className="block w-full p-3 bg-[var(--bg-0)] hover:bg-[var(--bg-2)] border border-[var(--line)] rounded-[2px] cursor-pointer transition-colors space-y-1.5 text-left"
                 >
                   <div className="flex justify-between items-center">
                     <span className="font-bold text-[12px] text-[var(--accent)]">{sc.title}</span>
@@ -257,12 +527,40 @@ export default function TitlePage() {
                     <span>|</span>
                     <span>Target: +${sc.targetProfit.toLocaleString()}</span>
                   </div>
-                </div>
+                </button>
               ))}
             </div>
-          </div>
-        </div>
+        </Dialog>
       )}
+
+      {showReplaceDialog && (
+        <ReplaceSlotDialog
+          slots={[...slots].sort((left, right) => left.slot - right.slot)}
+          onCancel={() => setShowReplaceDialog(false)}
+          onReplace={(slot) => {
+            void runStart(async () => {
+              setShowReplaceDialog(false);
+              await startCareer(slot);
+            });
+          }}
+        />
+      )}
+
+      {restoreTarget && (
+        <ConfirmDialog
+          title="Restore previous autosave"
+          confirmLabel="Restore previous autosave"
+          onConfirm={() => void confirmRestore()}
+          onCancel={() => setRestoreTarget(null)}
+        >
+          <p>
+            This replaces the current save in {restoreTarget.meta.name} (Day {restoreTarget.meta.simDay}, $
+            {restoreTarget.meta.equity.toLocaleString()}) with the previous autosave from this slot.
+          </p>
+        </ConfirmDialog>
+      )}
+
+      <AuthDialogs />
     </main>
   );
 }

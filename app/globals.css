@@ -12,6 +12,12 @@
   --accent: #E0A03A;
   --up: #3DB070;
   --down: #E5534B;
+  /* Single floating-surface elevation. Hairline ring plus one soft drop. */
+  --shadow-float: 0 0 0 1px rgba(255, 255, 255, 0.04), 0 12px 32px rgba(0, 0, 0, 0.4);
+}
+
+.shadow-float {
+  box-shadow: var(--shadow-float);
 }
 
 body {

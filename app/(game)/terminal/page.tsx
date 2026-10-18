@@ -11,19 +11,25 @@ import { EndOfDayModal } from '../../../src/features/eod-report/EndOfDayModal';
 import { SettingsModal } from '../../../src/features/settings/SettingsModal';
 import { SpotlightTutorial } from '../../../src/features/tutorial/SpotlightTutorial';
 import { ToastContainer } from '../../../src/features/toasts/ToastContainer';
+import { saveManager } from '../../../src/saves/manager';
+import { AuthDialogs } from '../../../src/features/auth/AuthDialogs';
+import { GuestNudge } from '../../../src/features/auth/SyncIndicator';
+import { useAuthStore } from '../../../src/store/useAuthStore';
 
 export default function TerminalPage() {
   const engine = useTerminalStore((s) => s.engine);
-  const initEngine = useTerminalStore((s) => s.initEngine);
+  const initSession = useTerminalStore((s) => s.initSession);
+  const sessionPhase = useTerminalStore((s) => s.sessionPhase);
   const setSnapshot = useTerminalStore((s) => s.setSnapshot);
   const lastTickTime = useRef<number>(0);
 
-  // Initialize engine if not already running
+  // Hydrate the session if not already running: restore the stored slot when present,
+  // otherwise start a fresh engine. Autosave only writes once the session is ready.
   useEffect(() => {
-    if (!engine) {
-      initEngine('TAPE_1337', 'career', 100000);
+    if (!engine && sessionPhase !== 'loading') {
+      void initSession();
     }
-  }, [engine, initEngine]);
+  }, [engine, sessionPhase, initSession]);
 
   // Simulation tick loop (runs engine ticks and batches snapshots to main thread:
   // at most 4 times per second at 1x, up to 10 per second at 20x)
@@ -62,6 +68,28 @@ export default function TerminalPage() {
     return () => clearInterval(interval);
   }, [setSnapshot]);
 
+  // Autosave: every 60 seconds while a game is live, and as soon as the tab is hidden.
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (useTerminalStore.getState().engine) saveManager.noteDirty(0);
+    }, 60000);
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') void saveManager.flush();
+    };
+    const onPageHide = () => {
+      void saveManager.flush();
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('pagehide', onPageHide);
+
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('pagehide', onPageHide);
+    };
+  }, []);
+
   // Global hotkeys (Space to toggle pause)
   useEffect(() => {
     const handleGlobalKeys = (e: KeyboardEvent) => {
@@ -79,6 +107,20 @@ export default function TerminalPage() {
     return () => window.removeEventListener('keydown', handleGlobalKeys);
   }, []);
 
+  // Auth: restore the Supabase session once on mount (no-op when not configured).
+  useEffect(() => {
+    useAuthStore.getState().init();
+    // The callback route forwards failures here, so the sign-in dialog can explain them.
+    const params = new URLSearchParams(window.location.search);
+    const authError = params.get('auth_error');
+    if (authError) {
+      useAuthStore.getState().reportAuthError(authError);
+      params.delete('auth_error');
+      const query = params.toString();
+      window.history.replaceState(null, '', `${window.location.pathname}${query ? `?${query}` : ''}`);
+    }
+  }, []);
+
   return (
     <div className="min-h-[100dvh] w-full bg-[var(--bg-0)] text-[var(--text-1)] overflow-hidden font-sans">
       {/* Dockable Workspace */}
@@ -93,6 +135,8 @@ export default function TerminalPage() {
       <SettingsModal />
       <SpotlightTutorial />
       <ToastContainer />
+      <AuthDialogs />
+      <GuestNudge />
     </div>
   );
 }

@@ -53,6 +53,11 @@ export class Money {
     return Math.round(this.d.times(100).toNumber());
   }
 
+  // Exact string form for persistence. Never use floats for stored money.
+  toString(): string {
+    return this.d.toString();
+  }
+
   isPositive(): boolean {
     return this.d.greaterThan(0);
   }

@@ -18,6 +18,16 @@ export class SeededRNG {
     if (this.state === 0) this.state = 1337;
   }
 
+  // Save/restore the internal counter so a restored save continues the exact same sequence.
+  getState(): number {
+    return this.state;
+  }
+
+  setState(state: number) {
+    this.state = state >>> 0;
+    if (this.state === 0) this.state = 1337;
+  }
+
   // Returns pseudo-random uniform float in [0, 1)
   next(): number {
     let t = (this.state += 0x6d2b79f5);
