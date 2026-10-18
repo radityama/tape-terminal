@@ -33,7 +33,7 @@ export class CloudSaveStore implements SaveStore {
   async list(): Promise<SaveMeta[]> {
     const { data, error } = await this.client
       .from('saves')
-      .select('slot,name,seed,mode,rank,equity,sim_day,updated_at,revision,device_id')
+      .select('slot,name,seed,mode,rank,equity,sim_day,updated_at,revision,seq,device_id')
       .eq('user_id', this.userId)
       .order('updated_at', { ascending: false });
     if (error) throw new Error(error.message);
@@ -48,6 +48,7 @@ export class CloudSaveStore implements SaveStore {
       simDay: row.sim_day ?? 1,
       updatedAt: new Date(row.updated_at).getTime(),
       revision: row.revision,
+      seq: row.seq ?? undefined,
       deviceId: row.device_id,
     }));
   }
