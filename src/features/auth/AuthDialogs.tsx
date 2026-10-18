@@ -176,7 +176,7 @@ function AccountDialog() {
     return (
       <ConfirmDialog
         title="Delete cloud saves?"
-        confirmLabel={`Delete ${cloudCount} cloud ${cloudCount === 1 ? 'save' : 'saves'}`}
+        confirmLabel={deletingCloud ? 'Deleting cloud saves…' : `Delete ${cloudCount} cloud ${cloudCount === 1 ? 'save' : 'saves'}`}
         onCancel={() => { if (!busyRef.current && !deletingCloud) setConfirmDelete(false); }}
         onConfirm={() => void deleteConfirmed()}
         busy={loading || deletingCloud}
@@ -185,6 +185,7 @@ function AccountDialog() {
           This deletes {cloudCount} cloud {cloudCount === 1 ? 'save' : 'saves'} from your account. Saves on this
           device stay. This cannot be undone.
         </p>
+        {deletingCloud ? <p role="status">Checking each cloud save. Keep this dialog open.</p> : null}
       </ConfirmDialog>
     );
   }
