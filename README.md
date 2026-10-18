@@ -166,7 +166,7 @@ Copy `.env.example` to `.env.local` and set:
 - `NEXT_PUBLIC_SUPABASE_URL`
 - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
 
-Both are safe to expose in the browser; row level security enforces ownership. Without these values the sign-in entry points stay hidden and nothing else changes.
+Both are safe to expose in the browser; row level security enforces ownership. Without these values the sign-in entry points stay hidden and nothing else changes. A newer `sb_publishable_...` key works in `NEXT_PUBLIC_SUPABASE_ANON_KEY`; there is no separate publishable variable.
 
 On hosted deployments, set `NEXT_PUBLIC_SITE_URL` to the public app origin, for example `https://tape.example`. Leave it empty for local development; the callback then uses forwarded request headers or the incoming Host header. Add `<origin>/auth/callback` to Supabase Auth redirect URLs. The callback accepts only local redirect paths, including after URL normalization, and shows fixed messages for provider errors.
 
