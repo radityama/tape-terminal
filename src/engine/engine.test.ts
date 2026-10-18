@@ -218,6 +218,68 @@ test('Portfolio long execution, mark to market, and PnL calculation', () => {
   assert.equal(portfolio.getPosition('HLVG')?.shares, 50);
 });
 
+test('marked long equity includes unrealized profit exactly once', () => {
+  const portfolio = new PortfolioEngine(10000);
+  assert.equal(portfolio.executeFill({
+    orderId: 'long', ticker: 'HLVG', side: 'buy', shares: 10, price: 100,
+    commission: 0, slippageDollars: 0, timestamp: 1000,
+  }).success, true);
+  portfolio.updateMarketPrices(new Map([['HLVG', 110]]));
+
+  assert.equal(portfolio.getPosition('HLVG')?.unrealizedPnl, 100);
+  assert.equal(portfolio.calculateRiskMetrics(COMPANY_MAP).netLiquidationValue, 10100);
+  portfolio.updateMarketPrices(new Map([['HLVG', 90]]));
+  assert.equal(portfolio.calculateRiskMetrics(COMPANY_MAP).netLiquidationValue, 9900);
+  assert.equal(portfolio.exportState().peakEquity, '10100');
+  assert.equal(portfolio.exportState().maxDrawdownPercent, 2);
+});
+
+test('short sale proceeds are offset by marked liability and commissions', () => {
+  const portfolio = new PortfolioEngine(10000, true, true);
+  assert.equal(portfolio.executeFill({
+    orderId: 'short', ticker: 'HLVG', side: 'sell', shares: 10, price: 100,
+    commission: 2, slippageDollars: 0, timestamp: 1000,
+  }).success, true);
+  assert.equal(portfolio.getCash(), 10998);
+  assert.equal(portfolio.calculateRiskMetrics(COMPANY_MAP).netLiquidationValue, 9998);
+
+  portfolio.updateMarketPrices(new Map([['HLVG', 90]]));
+  assert.equal(portfolio.getPosition('HLVG')?.unrealizedPnl, 100);
+  const risk = portfolio.calculateRiskMetrics(COMPANY_MAP);
+  assert.equal(risk.netLiquidationValue, 10098);
+  assert.equal(risk.buyingPower, 19296);
+  assert.equal(risk.marginCushionPercent, 4388);
+
+  const cover = portfolio.executeFill({
+    orderId: 'cover', ticker: 'HLVG', side: 'buy', shares: 4, price: 90,
+    commission: 1, slippageDollars: 0, timestamp: 2000,
+  });
+  assert.equal(cover.tradeRecord?.realizedPnl, 40);
+  assert.equal(portfolio.getPosition('HLVG')?.shares, -6);
+  assert.equal(portfolio.getPosition('HLVG')?.unrealizedPnl, 60);
+  assert.equal(portfolio.calculateRiskMetrics(COMPANY_MAP).netLiquidationValue, 10097);
+});
+
+test('partial close moves marked gain into realized profit without changing equity except commission', () => {
+  const portfolio = new PortfolioEngine(10000);
+  assert.equal(portfolio.executeFill({
+    orderId: 'open', ticker: 'HLVG', side: 'buy', shares: 10, price: 100,
+    commission: 2, slippageDollars: 0, timestamp: 1000,
+  }).success, true);
+  portfolio.updateMarketPrices(new Map([['HLVG', 110]]));
+  assert.equal(portfolio.calculateRiskMetrics(COMPANY_MAP).netLiquidationValue, 10098);
+
+  const close = portfolio.executeFill({
+    orderId: 'close', ticker: 'HLVG', side: 'sell', shares: 4, price: 110,
+    commission: 1, slippageDollars: 0, timestamp: 2000,
+  });
+  assert.equal(close.success, true);
+  assert.equal(close.tradeRecord?.realizedPnl, 40);
+  assert.equal(portfolio.getPosition('HLVG')?.shares, 6);
+  assert.equal(portfolio.getPosition('HLVG')?.unrealizedPnl, 60);
+  assert.equal(portfolio.calculateRiskMetrics(COMPANY_MAP).netLiquidationValue, 10097);
+});
+
 test('portfolio rejects invalid internal fills without changing cash, positions or history', () => {
   const valid = { orderId: 'bad_fill', ticker: 'HLVG', side: 'buy' as const, shares: 10, price: 100, commission: 1.5, slippageDollars: 0, timestamp: 1000 };
   const invalid = [
@@ -270,6 +332,11 @@ test('Margin cushion and forced liquidation trigger on maintenance breach', () =
   portfolio.updateMarketPrices(new Map([['VCRX', 65.0]]));
 
   const risk = portfolio.calculateRiskMetrics(COMPANY_MAP);
+  assert.equal(risk.netLiquidationValue, 17490);
+  assert.equal(risk.maintenanceMarginRequirement, 24375);
+  assert.equal(risk.marginCushionPercent, -28.2);
+  assert.equal(risk.buyingPower, 0);
+  assert.equal(portfolio.exportState().maxDrawdownPercent, 82.5);
   assert.ok(risk.isMarginBreached, 'Margin must be flagged as breached when equity falls below maintenance requirement');
 
   // Broker executes forced liquidation of the loser
