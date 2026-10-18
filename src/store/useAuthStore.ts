@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import type { SupabaseClient, User } from '@supabase/supabase-js';
 import { createBrowserSupabase } from '../lib/supabase/client';
 import { CloudSaveStore } from '../saves/cloudStore';
-import { saveManager, SyncConflict } from '../saves/manager';
+import { saveManager, SyncConflict, type CloudSyncLifecycle } from '../saves/manager';
 
 export type AuthDialog = 'none' | 'signin' | 'account' | 'claim' | 'conflict';
 
@@ -12,6 +12,10 @@ export interface AuthUser {
   providers: string[];
 }
 
+export type CloudDeletionResult =
+  | { status: 'success'; deletedSlots: number[] }
+  | { status: 'failed' | 'partial'; deletedSlots: number[]; failedSlots: number[]; message: string };
+
 interface AuthState {
   configured: boolean;
   ready: boolean;
@@ -19,6 +23,7 @@ interface AuthState {
   signedIn: boolean;
   user: AuthUser | null;
   loading: boolean;
+  deletingCloud: boolean;
   error: string | null;
   emailSentTo: string | null;
   resendAvailableAt: number;
@@ -35,7 +40,8 @@ interface AuthState {
   resendMagicLink: () => Promise<void>;
   signInWithOAuth: (provider: 'github' | 'google') => Promise<void>;
   signOut: (opts?: { removeCloudSaves?: boolean }) => Promise<void>;
-  deleteCloudSaves: () => Promise<void>;
+  deleteCloudSaves: () => Promise<CloudDeletionResult>;
+  enableCloudSync: () => void;
 }
 
 const MAGIC_LINK_COOLDOWN_MS = 30000;
@@ -46,6 +52,7 @@ let initStarted = false;
 // and throwing away the sync state (base revisions, status) of the first wire-up.
 let cloudUserId: string | null = null;
 let authEventId = 0;
+let deletionInFlight: Promise<CloudDeletionResult> | null = null;
 
 function toUser(user: User): AuthUser {
   const providers = Array.isArray(user.app_metadata?.providers)
@@ -74,6 +81,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   signedIn: false,
   user: null,
   loading: false,
+  deletingCloud: false,
   error: null,
   emailSentTo: null,
   resendAvailableAt: 0,
@@ -177,21 +185,84 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   signOut: async (opts) => {
     if (!client) return;
-    set({ loading: true });
-    if (opts?.removeCloudSaves && get().user) {
-      await get().deleteCloudSaves();
+    set({ loading: true, error: null });
+    try {
+      if (opts?.removeCloudSaves) {
+        const result = await get().deleteCloudSaves();
+        if (result.status !== 'success') {
+          set({ error: `${result.message} You are still signed in; retry deletion or sign out without it.` });
+          return;
+        }
+      }
+      const { error } = await client.auth.signOut();
+      if (error) throw error;
+      wireCloud(null);
+      set({ signedIn: false, user: null, emailSentTo: null, dialog: 'none' });
+    } catch {
+      set({ error: 'Could not sign out. Please retry.' });
+    } finally {
+      set({ loading: false });
     }
-    await client.auth.signOut();
-    set({ loading: false, signedIn: false, user: null, emailSentTo: null });
   },
 
   deleteCloudSaves: async () => {
+    if (deletionInFlight) return deletionInFlight;
+    const task = (async (): Promise<CloudDeletionResult> => {
     const user = get().user;
-    if (!client || !user) return;
+    const initialEvent = authEventId;
+    const failure = (deletedSlots: number[], failedSlots: number[], message: string): CloudDeletionResult => ({
+      status: deletedSlots.length ? 'partial' : 'failed', deletedSlots, failedSlots, message,
+    });
+    if (!client || !user) return failure([], [], 'Sign in before deleting cloud saves.');
+    set({ deletingCloud: true, error: null });
     const store = new CloudSaveStore(client, user.id);
-    for (const slot of [1, 2, 3]) {
-      await store.delete(slot).catch(() => undefined);
+    let previousSyncState: CloudSyncLifecycle;
+    try {
+      previousSyncState = await saveManager.pauseCloudWrites();
+    } catch {
+      return failure([], [], 'A cloud save is still syncing. Retry deletion in a moment.');
     }
+    if (get().user?.id !== user.id || authEventId !== initialEvent) {
+      // Nothing was deleted yet, so a pause that only existed for this attempt must not stay behind.
+      if (previousSyncState === 'active') saveManager.resumeCloudWrites();
+      return failure([], [], 'The signed-in account changed during deletion. Check the current account before continuing.');
+    }
+    let slots: number[];
+    try {
+      slots = (await store.list()).map((save) => save.slot);
+    } catch {
+      if (previousSyncState === 'active') saveManager.resumeCloudWrites();
+      return failure([], [], 'Could not check cloud saves. No deletion was confirmed.');
+    }
+    const deletedSlots: number[] = [];
+    const failedSlots: number[] = [];
+    for (const slot of slots) {
+      if (get().user?.id !== user.id || authEventId !== initialEvent) return failure(deletedSlots, slots.filter((candidate) => !deletedSlots.includes(candidate)), 'The signed-in account changed during deletion. Check the current account before continuing.');
+      try {
+        await store.delete(slot);
+        deletedSlots.push(slot);
+      } catch {
+        failedSlots.push(slot);
+      }
+    }
+    if (failedSlots.length) {
+      const syncNote = saveManager.getCloudSyncState() === 'disabled_after_deletion'
+        ? 'Cloud sync stays disabled until you enable it again or sign out.'
+        : 'Cloud sync stays paused until a retry completes or you sign out.';
+      return failure(deletedSlots, failedSlots, `Could not delete cloud save ${failedSlots.join(', ')}. ${deletedSlots.length ? 'Completed deletions cannot be undone. ' : ''}${syncNote}`);
+    }
+    if (get().user?.id !== user.id) return failure(deletedSlots, [], 'The signed-in account changed during deletion. Check the current account before continuing.');
+    saveManager.disableCloudWritesAfterDeletion();
+    return { status: 'success', deletedSlots };
+    })();
+    deletionInFlight = task;
+    try { return await task; }
+    finally { deletionInFlight = null; set({ deletingCloud: false }); }
+  },
+
+  enableCloudSync: () => {
+    if (!get().user) return;
+    saveManager.enableCloudWritesAfterDeletion();
   },
 }));
 
