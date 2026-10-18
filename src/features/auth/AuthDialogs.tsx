@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   GoogleLogo,
   GithubLogo,
@@ -118,34 +118,68 @@ function AccountDialog() {
   const signOut = useAuthStore((s) => s.signOut);
   const deleteCloudSaves = useAuthStore((s) => s.deleteCloudSaves);
   const loading = useAuthStore((s) => s.loading);
+  const deletingCloud = useAuthStore((s) => s.deletingCloud);
   const authError = useAuthStore((s) => s.error);
+  const enableCloudSync = useAuthStore((s) => s.enableCloudSync);
 
   const [removeOnSignOut, setRemoveOnSignOut] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmEnable, setConfirmEnable] = useState(false);
+  const [syncState, setSyncState] = useState(() => saveManager.getCloudSyncState());
   const [cloudCount, setCloudCount] = useState<number | null>(null);
   const [listError, setListError] = useState(false);
   const [deletionError, setDeletionError] = useState<string | null>(null);
+  const operationRef = useRef(0);
+  const busyRef = useRef(false);
+
+  const refreshCount = useCallback(async () => {
+    const accountId = useAuthStore.getState().user?.id;
+    try {
+      const slots = await saveManager.listAllSlots();
+      if (useAuthStore.getState().user?.id !== accountId) return;
+      setCloudCount(slots.filter((slot) => slot.cloudUpdatedAt !== undefined).length);
+      setListError(false);
+    } catch {
+      setCloudCount(null);
+      setListError(true);
+    }
+  }, []);
 
   useEffect(() => {
-    void saveManager.listAllSlots()
-      .then((slots) => setCloudCount(slots.filter((s) => s.cloudUpdatedAt !== undefined).length))
-      .catch(() => setListError(true));
-  }, []);
+    void Promise.resolve().then(refreshCount);
+    return () => { operationRef.current += 1; };
+  }, [refreshCount, user?.id]);
+
+  const deleteConfirmed = async () => {
+    if (busyRef.current || deletingCloud || !user) return;
+    busyRef.current = true;
+    const request = ++operationRef.current;
+    const accountId = user.id;
+    setDeletionError(null);
+    try {
+      const result = await deleteCloudSaves();
+      if (request !== operationRef.current || useAuthStore.getState().user?.id !== accountId) return;
+      setConfirmDelete(false);
+      setSyncState(saveManager.getCloudSyncState());
+      setCloudCount((count) => count === null ? null : Math.max(0, count - result.deletedSlots.length));
+      if (result.status === 'success') closeDialog();
+      else setDeletionError(result.message);
+      if (result.status !== 'success') void refreshCount();
+    } catch {
+      if (request === operationRef.current) setDeletionError('Could not verify cloud deletion. Retry after checking your account.');
+    } finally {
+      busyRef.current = false;
+    }
+  };
 
   if (confirmDelete && cloudCount !== null) {
     return (
       <ConfirmDialog
         title="Delete cloud saves?"
         confirmLabel={`Delete ${cloudCount} cloud ${cloudCount === 1 ? 'save' : 'saves'}`}
-        onCancel={() => setConfirmDelete(false)}
-        onConfirm={() => {
-          void deleteCloudSaves().then((result) => {
-            setConfirmDelete(false);
-            if (result.status === 'success') closeDialog();
-            else setDeletionError(result.message);
-          });
-        }}
-        busy={loading}
+        onCancel={() => { if (!busyRef.current && !deletingCloud) setConfirmDelete(false); }}
+        onConfirm={() => void deleteConfirmed()}
+        busy={loading || deletingCloud}
       >
         <p>
           This deletes {cloudCount} cloud {cloudCount === 1 ? 'save' : 'saves'} from your account. Saves on this
@@ -155,8 +189,18 @@ function AccountDialog() {
     );
   }
 
+  if (confirmEnable) {
+    return <ConfirmDialog title="Enable cloud sync?" confirmLabel="Enable cloud sync" onCancel={() => setConfirmEnable(false)} onConfirm={() => {
+      enableCloudSync();
+      setSyncState(saveManager.getCloudSyncState());
+      setConfirmEnable(false);
+    }}>
+      <p>Local saves may be uploaded to your account again. Deleted cloud saves may be recreated after conflict checks.</p>
+    </ConfirmDialog>;
+  }
+
   return (
-    <Dialog title="Account" onClose={closeDialog}>
+    <Dialog title="Account" onClose={() => { if (!busyRef.current && !deletingCloud) closeDialog(); }}>
       <div className="p-4 space-y-3 text-[12px]">
         <div className="space-y-1">
           <div className="text-[10px] uppercase tracking-wide text-[var(--text-3)]">Email</div>
@@ -181,10 +225,15 @@ function AccountDialog() {
           <span>Delete my cloud saves before signing out</span>
         </label>
 
-        <button className={secondaryBtn} disabled={loading} onClick={() => void signOut({ removeCloudSaves: removeOnSignOut })}>
+        <button className={secondaryBtn} disabled={loading || deletingCloud} onClick={() => { setDeletionError(null); void signOut({ removeCloudSaves: removeOnSignOut }); }}>
           Sign out
         </button>
-        {(authError || deletionError) && <p role="alert" className="text-[11px] text-[var(--down)]">{authError ?? deletionError}</p>}
+        {(deletionError || authError) && <p role="alert" className="text-[11px] text-[var(--down)]">{deletionError ?? authError}</p>}
+
+        {syncState !== 'active' ? <div className="space-y-2 text-[11px] text-[var(--text-2)]">
+          <p role="status">Cloud sync is {syncState === 'disabled_after_deletion' ? 'disabled after deletion' : 'paused while deletion is incomplete'}. Local saves remain on this device.</p>
+          {syncState === 'disabled_after_deletion' ? <button className={secondaryBtn} onClick={() => setConfirmEnable(true)}>Enable cloud sync again</button> : null}
+        </div> : null}
 
         <div className="pt-2 border-t border-[var(--line)] space-y-2">
           {listError ? (
@@ -194,8 +243,8 @@ function AccountDialog() {
           ) : null}
           <button
             className="w-full h-[30px] rounded-[2px] border border-[var(--line)] text-[var(--text-1)] text-[12px] flex items-center justify-center space-x-1.5 cursor-pointer hover:bg-[var(--bg-2)] disabled:opacity-50 disabled:cursor-not-allowed"
-            disabled={cloudCount === null || loading}
-            onClick={() => setConfirmDelete(true)}
+            disabled={cloudCount === null || loading || deletingCloud}
+            onClick={() => { setDeletionError(null); setConfirmDelete(true); }}
           >
             <Trash size={14} />
             Delete my cloud saves

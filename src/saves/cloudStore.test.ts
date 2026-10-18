@@ -64,20 +64,25 @@ test('zero rows updated with a missing cloud row does not resurrect a deleted sl
 });
 
 test('cloud deletion checks returned errors, verifies absence and restricts ownership', async () => {
-  const filters: Array<[string, unknown]> = [];
+  const deleteFilters: Array<[string, unknown]> = [];
+  const verifyFilters: Array<[string, unknown]> = [];
   let deletion: { error: { message: string } | null } = { error: null };
   let remaining: unknown = null;
-  const query = {
-    eq(key: string, value: unknown) { filters.push([key, value]); return query; },
-    select() { return query; },
+  const deleteQuery = {
+    eq(key: string, value: unknown) { deleteFilters.push([key, value]); return deleteQuery; },
+    select() { return deleteQuery; },
     then(resolve: (value: typeof deletion) => void) { resolve(deletion); },
+  };
+  const verifyQuery = {
+    eq(key: string, value: unknown) { verifyFilters.push([key, value]); return verifyQuery; },
     maybeSingle: async () => ({ data: remaining, error: null }),
   };
-  const client = { from: () => ({ delete: () => query, select: () => query }) } as unknown as SupabaseClient;
+  const client = { from: () => ({ delete: () => deleteQuery, select: () => verifyQuery }) } as unknown as SupabaseClient;
   const store = new CloudSaveStore(client, 'owner-a');
   await store.delete(2);
-  expect(filters).toContainEqual(['user_id', 'owner-a']);
-  expect(filters).toContainEqual(['slot', 2]);
+  expect(deleteFilters).toContainEqual(['user_id', 'owner-a']);
+  expect(deleteFilters).toContainEqual(['slot', 2]);
+  expect(verifyFilters).toContainEqual(['user_id', 'owner-a']);
   deletion = { error: { message: 'provider details' } };
   await expect(store.delete(2)).rejects.toThrow('Cloud save deletion failed');
   deletion = { error: null };

@@ -23,6 +23,7 @@ interface AuthState {
   signedIn: boolean;
   user: AuthUser | null;
   loading: boolean;
+  deletingCloud: boolean;
   error: string | null;
   emailSentTo: string | null;
   resendAvailableAt: number;
@@ -40,6 +41,7 @@ interface AuthState {
   signInWithOAuth: (provider: 'github' | 'google') => Promise<void>;
   signOut: (opts?: { removeCloudSaves?: boolean }) => Promise<void>;
   deleteCloudSaves: () => Promise<CloudDeletionResult>;
+  enableCloudSync: () => void;
 }
 
 const MAGIC_LINK_COOLDOWN_MS = 30000;
@@ -50,6 +52,7 @@ let initStarted = false;
 // and throwing away the sync state (base revisions, status) of the first wire-up.
 let cloudUserId: string | null = null;
 let authEventId = 0;
+let deletionInFlight: Promise<CloudDeletionResult> | null = null;
 
 function toUser(user: User): AuthUser {
   const providers = Array.isArray(user.app_metadata?.providers)
@@ -78,6 +81,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   signedIn: false,
   user: null,
   loading: false,
+  deletingCloud: false,
   error: null,
   emailSentTo: null,
   resendAvailableAt: 0,
@@ -192,6 +196,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       }
       const { error } = await client.auth.signOut();
       if (error) throw error;
+      wireCloud(null);
       set({ signedIn: false, user: null, emailSentTo: null, dialog: 'none' });
     } catch {
       set({ error: 'Could not sign out. Please retry.' });
@@ -201,17 +206,22 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   deleteCloudSaves: async () => {
+    if (deletionInFlight) return deletionInFlight;
+    const task = (async (): Promise<CloudDeletionResult> => {
     const user = get().user;
+    const initialEvent = authEventId;
     const failure = (deletedSlots: number[], failedSlots: number[], message: string): CloudDeletionResult => ({
       status: deletedSlots.length ? 'partial' : 'failed', deletedSlots, failedSlots, message,
     });
     if (!client || !user) return failure([], [], 'Sign in before deleting cloud saves.');
+    set({ deletingCloud: true, error: null });
     const store = new CloudSaveStore(client, user.id);
     try {
       await saveManager.pauseCloudWrites();
     } catch {
       return failure([], [], 'A cloud save is still syncing. Retry deletion in a moment.');
     }
+    if (get().user?.id !== user.id || authEventId !== initialEvent) return failure([], [], 'The signed-in account changed during deletion. Check the current account before continuing.');
     let slots: number[];
     try {
       slots = (await store.list()).map((save) => save.slot);
@@ -222,6 +232,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const deletedSlots: number[] = [];
     const failedSlots: number[] = [];
     for (const slot of slots) {
+      if (get().user?.id !== user.id || authEventId !== initialEvent) return failure(deletedSlots, slots.filter((candidate) => !deletedSlots.includes(candidate)), 'The signed-in account changed during deletion. Check the current account before continuing.');
       try {
         await store.delete(slot);
         deletedSlots.push(slot);
@@ -229,10 +240,19 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         failedSlots.push(slot);
       }
     }
-    if (failedSlots.length) return failure(deletedSlots, failedSlots, `Could not delete cloud save ${failedSlots.join(', ')}. Other completed deletions cannot be undone. Cloud sync is paused until you retry or sign out.`);
+    if (failedSlots.length) return failure(deletedSlots, failedSlots, `Could not delete cloud save ${failedSlots.join(', ')}. ${deletedSlots.length ? 'Completed deletions cannot be undone. ' : ''}Cloud sync is paused until you retry or sign out.`);
     if (get().user?.id !== user.id) return failure(deletedSlots, [], 'The signed-in account changed during deletion. Check the current account before continuing.');
-    saveManager.setCloudStore(null);
+    saveManager.disableCloudWritesAfterDeletion();
     return { status: 'success', deletedSlots };
+    })();
+    deletionInFlight = task;
+    try { return await task; }
+    finally { deletionInFlight = null; set({ deletingCloud: false }); }
+  },
+
+  enableCloudSync: () => {
+    if (!get().user) return;
+    saveManager.enableCloudWritesAfterDeletion();
   },
 }));
 
