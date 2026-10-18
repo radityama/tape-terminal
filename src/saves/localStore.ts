@@ -10,6 +10,13 @@ export type PutResult =
   | { ok: false; reason: 'too_large' }
   | { ok: false; reason: 'invalid'; message: string };
 
+export type SlotHealth = 'healthy' | 'corrupt' | 'unsupported_version';
+export type LocalSlot = { meta: SaveMeta; health: SlotHealth };
+export type SlotInspection =
+  | { status: 'empty' }
+  | { status: SlotHealth; meta: SaveMeta }
+  | { status: 'read_error' };
+
 export interface SaveStore {
   list(): Promise<SaveMeta[]>;
   get(slot: number): Promise<SaveGame | null>;
@@ -149,33 +156,40 @@ function saveToRow(save: SaveGame, revision: number): SaveRow & { payload: strin
 }
 
 export class LocalSaveStore implements SaveStore {
-  async list(): Promise<SaveMeta[]> {
-    const rows = await db.savedGames.toArray();
-    const metas: SaveMeta[] = [];
-    for (const row of rows) {
-      const slot = row.slot ?? legacySlot(row.id);
-      if (typeof row.payload === 'string') {
-        try {
-          metas.push(saveToMeta(rowToSave(row)));
-        } catch {
-          // Unreadable rows are skipped here so one damaged save cannot break the list. get() surfaces the error.
-        }
-      } else {
-        metas.push({
-          slot,
-          name: row.name ?? 'Career',
-          seed: row.seed,
-          mode: row.mode,
-          rank: null,
-          equity: row.equity ?? 100000,
-          simDay: row.simDay ?? 1,
-          updatedAt: row.savedAt ?? 0,
-          revision: 0,
-          deviceId: 'legacy',
-        });
-      }
+  async inspectSlot(slot: number): Promise<SlotInspection> {
+    try {
+      const row = await db.savedGames.get(slotId(slot));
+      if (!row) return { status: 'empty' };
+      const found = (await this.inspectSlots()).find((entry) => entry.meta.slot === slot);
+      return found ? { status: found.health, meta: found.meta } : { status: 'read_error' };
+    } catch {
+      return { status: 'read_error' };
     }
-    return metas.sort((a, b) => b.updatedAt - a.updatedAt);
+  }
+
+  async inspectSlots(): Promise<LocalSlot[]> {
+    const rows = await db.savedGames.toArray();
+    return rows.map((row) => {
+      const slot = row.slot ?? legacySlot(row.id);
+      const fallback: SaveMeta = {
+        slot, name: typeof row.name === 'string' ? row.name : `Save slot ${slot}`,
+        seed: typeof row.seed === 'string' ? row.seed : '',
+        mode: row.mode === 'sandbox' ? 'sandbox' : 'career', rank: null,
+        equity: typeof row.equity === 'number' ? row.equity : 0,
+        simDay: typeof row.simDay === 'number' ? row.simDay : 0,
+        updatedAt: row.updatedAt ?? row.savedAt ?? 0,
+        revision: row.revision ?? 0, deviceId: row.deviceId ?? 'unknown',
+      };
+      try {
+        return { meta: saveToMeta(rowToSave(row)), health: 'healthy' as const };
+      } catch (error) {
+        return { meta: fallback, health: error instanceof SaveVersionError ? 'unsupported_version' as const : 'corrupt' as const };
+      }
+    }).sort((a, b) => b.meta.updatedAt - a.meta.updatedAt);
+  }
+
+  async list(): Promise<SaveMeta[]> {
+    return (await this.inspectSlots()).map(({ meta }) => meta);
   }
 
   async get(slot: number): Promise<SaveGame | null> {
@@ -195,10 +209,11 @@ export class LocalSaveStore implements SaveStore {
   }
 
   async put(save: SaveGame, opts?: { expectedRevision?: number; force?: boolean }): Promise<PutResult> {
+    if (opts?.force) return { ok: false, reason: 'invalid', message: 'Forced writes require explicit replacement' };
     return db.transaction('rw', db.savedGames, db.autosaveHistory, async (): Promise<PutResult> => {
       const existing = await db.savedGames.get(slotId(save.slot));
       const existingRevision = existing?.revision ?? 0;
-      if (opts?.expectedRevision !== undefined && existingRevision !== opts.expectedRevision && !opts?.force) {
+      if (existing && (opts?.expectedRevision === undefined || existingRevision !== opts.expectedRevision)) {
         return { ok: false, reason: 'conflict', remoteRevision: existingRevision };
       }
 
@@ -240,6 +255,26 @@ export class LocalSaveStore implements SaveStore {
     });
   }
 
+  async replace(save: SaveGame, expectedRevision: number): Promise<PutResult> {
+    return db.transaction('rw', db.savedGames, db.backups, db.autosaveHistory, async () => {
+      const existing = await db.savedGames.get(slotId(save.slot));
+      if (!existing || existing.revision !== expectedRevision) {
+        return { ok: false, reason: 'conflict', remoteRevision: existing?.revision ?? 0 } as PutResult;
+      }
+      const raw = existing.payload ?? JSON.stringify(existing);
+      await db.backups.add({ slot: save.slot, savedAt: Date.now(), payload: raw });
+      await db.savedGames.delete(slotId(save.slot));
+      const result = await this.put(save);
+      if (!result.ok) throw new Error(`Replacement failed: ${result.reason}`);
+      return result;
+    });
+  }
+
+  async exportRaw(slot: number): Promise<string | null> {
+    const row = await db.savedGames.get(slotId(slot));
+    return row ? row.payload ?? JSON.stringify(row) : null;
+  }
+
   async delete(slot: number): Promise<void> {
     await db.savedGames.delete(slotId(slot));
   }
@@ -249,7 +284,7 @@ export class LocalSaveStore implements SaveStore {
   }
 
   async restoreHistory(slot: number): Promise<SaveGame | null> {
-    return db.transaction('rw', db.savedGames, db.autosaveHistory, async (): Promise<SaveGame | null> => {
+    return db.transaction('rw', db.savedGames, db.autosaveHistory, db.backups, async (): Promise<SaveGame | null> => {
       const rows = await db.autosaveHistory.where('slot').equals(slot).sortBy('savedAt');
       const latest = rows[rows.length - 1];
       if (!latest) return null;
@@ -259,7 +294,8 @@ export class LocalSaveStore implements SaveStore {
       const parsed = SaveGameSchema.safeParse(migrated);
       if (!parsed.success) throw new SaveCorruptError('A previous autosave could not be read.');
       const save = parsed.data;
-      const result = await this.put(save, { force: true, expectedRevision: undefined });
+      const current = await db.savedGames.get(slotId(slot));
+      const result = current ? await this.replace(save, current.revision ?? 0) : await this.put(save);
       if (!result.ok) throw new SaveCorruptError(`Could not restore the previous autosave: ${result.reason}${'message' in result ? `: ${result.message}` : ''}`);
       return { ...save, revision: result.revision };
     });

@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { useTerminalStore } from '../../store/useTerminalStore';
-import { saveManager, LoadOutcome } from '../../saves/manager';
+import { saveManager, LoadOutcome, MergedSlot } from '../../saves/manager';
 import { SaveMeta } from '../../saves/schema';
 import { SaveStatusRow } from '../auth/SyncIndicator';
 import { ConfirmDialog, Dialog } from '../dialog/Dialog';
@@ -28,7 +28,7 @@ export function SettingsModal() {
   const [customSeed, setCustomSeed] = useState(seed);
   const [importJsonText, setImportJsonText] = useState('');
   const [showImportBox, setShowImportBox] = useState(false);
-  const [pendingSeed, setPendingSeed] = useState<{ seed: string; save: SaveMeta } | null>(null);
+  const [pendingSeed, setPendingSeed] = useState<{ seed: string; save: MergedSlot } | null>(null);
 
   const refreshSlots = () => {
     saveManager.listSlots().then(setSavesList);
@@ -113,12 +113,25 @@ export function SettingsModal() {
     }
   };
 
-  const applySeed = async (seedValue: string) => {
+  const applySeed = async (seedValue: string, replacementRevision?: number) => {
+    try {
+      const slot = saveManager.getActiveSlot();
+      const current = (await saveManager.listAllSlots()).find((entry) => entry.slot === slot);
+      const valid = replacementRevision === undefined
+        ? !current
+        : current?.origin === 'local' && current.health === 'healthy' && current.meta.revision === replacementRevision;
+      if (!valid) throw new Error('Slot changed');
+    } catch {
+      addToast({ title: 'Slot Check Failed', message: 'Could not safely verify this slot. Try again.', type: 'error' });
+      return;
+    }
     const previous = useTerminalStore.getState();
     const slot = saveManager.getActiveSlot();
     initEngine(seedValue, 'career', 100000);
     try {
-      const result = await saveManager.save(slot, { force: true });
+      const result = replacementRevision === undefined
+        ? await saveManager.save(slot)
+        : await saveManager.replaceSlot(slot, replacementRevision);
       if (!result.ok) throw new Error('Save failed');
     } catch {
       useTerminalStore.setState(previous);
@@ -138,14 +151,18 @@ export function SettingsModal() {
   const handleApplySeed = async () => {
     const seedValue = customSeed.trim();
     if (!seedValue) return;
-    let current: SaveMeta | undefined;
+    let current: MergedSlot | undefined;
     try {
-      current = (await saveManager.listAllSlots()).find((slot) => slot.slot === saveManager.getActiveSlot())?.meta;
+      current = (await saveManager.listAllSlots()).find((slot) => slot.slot === saveManager.getActiveSlot());
     } catch {
       addToast({ title: 'Slot Check Failed', message: 'Could not check your saves. Try again.', type: 'error' });
       return;
     }
     if (current) {
+      if (current.health !== 'healthy' || current.origin !== 'local') {
+        addToast({ title: 'Slot Protected', message: 'This slot cannot be replaced here. Inspect or export the save on the title screen.', type: 'error' });
+        return;
+      }
       setPendingSeed({ seed: seedValue, save: current });
       return;
     }
@@ -153,7 +170,7 @@ export function SettingsModal() {
   };
 
   if (pendingSeed) {
-    const currentSave = pendingSeed.save;
+    const currentSave = pendingSeed.save.meta;
     return (
       <ConfirmDialog
         title="Generate a new universe?"
@@ -162,7 +179,7 @@ export function SettingsModal() {
         onConfirm={() => {
           const seedValue = pendingSeed.seed;
           setPendingSeed(null);
-          void applySeed(seedValue);
+          void applySeed(seedValue, currentSave.revision);
         }}
       >
         <p>

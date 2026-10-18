@@ -41,8 +41,9 @@ function ReplaceSlotDialog({
         <p id={descriptionId} className="text-[var(--text-2)] leading-relaxed">
           Starting a new career replaces one of your saves. Choose the slot to replace.
         </p>
+        {slots.length === 0 && <p role="alert" className="text-[var(--text-2)]">No slot can be safely replaced here. Export or recover the occupied saves first.</p>}
         <div role="radiogroup" aria-label="Slot to replace" className="space-y-1">
-          {slots.map((slot) => (
+          {slots.filter((slot) => slot.origin === 'local' && slot.health === 'healthy').map((slot) => (
             <label
               key={slot.slot}
               className={`flex items-start gap-2 p-2 border rounded-[2px] cursor-pointer ${
@@ -109,7 +110,7 @@ export default function TitlePage() {
   const [listError, setListError] = useState<string | null>(null);
   const [slotError, setSlotError] = useState<{
     slot: number;
-    kind: 'resume' | 'restore';
+    kind: 'resume' | 'restore' | 'export';
     message: string;
   } | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
@@ -120,6 +121,7 @@ export default function TitlePage() {
   const [restoreTarget, setRestoreTarget] = useState<MergedSlot | null>(null);
   const [selectedScenario, setSelectedScenario] = useState<Scenario | null>(null);
   const [showScenarioModal, setShowScenarioModal] = useState(false);
+  const [scenarioError, setScenarioError] = useState<string | null>(null);
   const [seedInput, setSeedInput] = useState('TAPE_1337');
   const [difficultySelect, setDifficultySelect] = useState<'learner' | 'standard' | 'hardcore'>('standard');
 
@@ -188,14 +190,30 @@ export default function TitlePage() {
     };
   }, [authReady, authSignedIn, loadSlots]);
 
-  const startCareer = async (slot: number) => {
+  const startCareer = async (slot: number, replacementRevision?: number) => {
+    try {
+      const current = await saveManager.listAllSlots();
+      const occupied = current.find((entry) => entry.slot === slot);
+      const valid = replacementRevision === undefined
+        ? !occupied
+        : occupied?.origin === 'local' && occupied.health === 'healthy' && occupied.meta.revision === replacementRevision;
+      if (!valid) {
+        setStartError('This slot changed. Check the saves and choose again.');
+        await loadSlots();
+        return;
+      }
+    } catch {
+      setStartError('Could not verify this save slot. Try again.');
+      return;
+    }
     const previous = useTerminalStore.getState();
     const previousSlot = saveManager.getActiveSlot();
     saveManager.setActiveSlot(slot);
     initEngine(seedInput || 'TAPE_1337', 'career', 100000);
     try {
-      // Explicit choice: replace the slot even though its seq is higher than a fresh career.
-      const result = await saveManager.save(slot, { force: true });
+      const result = replacementRevision === undefined
+        ? await saveManager.save(slot)
+        : await saveManager.replaceSlot(slot, replacementRevision);
       if (!result.ok) throw new Error('Save failed');
     } catch {
       useTerminalStore.setState(previous);
@@ -280,7 +298,35 @@ export default function TitlePage() {
     }
   };
 
-  const handleLaunchScenario = (sc: Scenario) => {
+  const handleRawExport = async (slot: number) => {
+    try {
+      const raw = await saveManager.exportRaw(slot);
+      if (!raw) throw new Error('Missing save');
+      const url = URL.createObjectURL(new Blob([raw], { type: 'application/json' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `tape-slot-${slot}-raw.json`;
+      link.click();
+      URL.revokeObjectURL(url);
+      setSlotError(null);
+    } catch {
+      setSlotError({ slot, kind: 'export', message: 'Could not export the original save. Retry when storage is available.' });
+    }
+  };
+
+  const handleLaunchScenario = async (sc: Scenario) => {
+    try {
+      const current = await saveManager.listAllSlots();
+      const choice = chooseCareerSlot(current.map((slot) => slot.slot));
+      if (choice.mode !== 'auto') {
+        setScenarioError('All save slots are occupied. Free a slot before starting a scenario.');
+        return;
+      }
+      saveManager.setActiveSlot(choice.slot);
+    } catch {
+      setScenarioError('Could not verify save slots. Try again.');
+      return;
+    }
     startScenario(sc);
     setShowScenarioModal(false);
     router.push('/terminal');
@@ -426,21 +472,28 @@ export default function TitlePage() {
                       <button
                         type="button"
                         onClick={() => void handleContinue(slot)}
+                        disabled={slot.health !== 'healthy'}
                         className="w-full p-2 hover:bg-[var(--bg-2)] flex items-center justify-between text-left cursor-pointer transition-colors"
                       >
                         <div>
                           <div className="font-semibold text-[var(--text-1)]">
                             {slot.meta.name}
+                            {slot.health !== 'healthy' && <span className="pl-2 text-[var(--down)]">{slot.health === 'corrupt' ? 'Unreadable save' : 'Newer save version'}</span>}
                             <span className="text-[10px] text-[var(--text-3)] pl-2">
                               {slot.origin === 'both' ? 'Both' : slot.origin === 'cloud' ? 'Cloud' : 'This device'}
                             </span>
                           </div>
                           <div className="text-[10px] text-[var(--text-3)]">
-                            Day {slot.meta.simDay} | Net Equity ${slot.meta.equity.toLocaleString()}
+                            {slot.health === 'healthy' ? `Day ${slot.meta.simDay} | Net Equity $${slot.meta.equity.toLocaleString()}` : 'This slot is occupied. Its original data is preserved.'}
                           </div>
                         </div>
                         <span className="text-[var(--accent)] text-[10px]">Resume &rarr;</span>
                       </button>
+                      {slot.health !== 'healthy' && slot.origin !== 'cloud' && (
+                        <button type="button" className="block ml-2 mb-2 min-h-11 text-[10px] text-[var(--text-2)] underline focus-visible:outline-2 focus-visible:outline-[var(--accent)]" onClick={() => void handleRawExport(slot.slot)}>
+                          Export original save
+                        </button>
+                      )}
                       {historySlots.includes(slot.slot) && (
                         <button
                           type="button"
@@ -456,7 +509,7 @@ export default function TitlePage() {
                           <button
                             type="button"
                             onClick={() =>
-                              rowError.kind === 'resume' ? void handleContinue(slot) : handleRestoreAutosave(slot.slot)
+                              rowError.kind === 'resume' ? void handleContinue(slot) : rowError.kind === 'export' ? void handleRawExport(slot.slot) : handleRestoreAutosave(slot.slot)
                             }
                             className="h-[24px] px-2 rounded-[2px] bg-[var(--bg-2)] border border-[var(--line)] text-[10px] text-[var(--text-1)] hover:bg-[var(--line)] cursor-pointer"
                           >
@@ -508,11 +561,12 @@ export default function TitlePage() {
       {showScenarioModal && (
         <Dialog title="Hand-Authored Historical Scenarios" width="max-w-xl" onClose={() => setShowScenarioModal(false)}>
             <div className="space-y-2 max-h-96 overflow-y-auto p-4 font-mono text-[11px]">
+              {scenarioError && <p role="alert" className="text-[var(--down)]">{scenarioError}</p>}
               {SCENARIOS.map((sc) => (
                 <button
                   type="button"
                   key={sc.id}
-                  onClick={() => handleLaunchScenario(sc)}
+                  onClick={() => void handleLaunchScenario(sc)}
                   className="block w-full p-3 bg-[var(--bg-0)] hover:bg-[var(--bg-2)] border border-[var(--line)] rounded-[2px] cursor-pointer transition-colors space-y-1.5 text-left"
                 >
                   <div className="flex justify-between items-center">
@@ -535,12 +589,14 @@ export default function TitlePage() {
 
       {showReplaceDialog && (
         <ReplaceSlotDialog
-          slots={[...slots].sort((left, right) => left.slot - right.slot)}
+          slots={[...slots].filter((slot) => slot.origin === 'local' && slot.health === 'healthy').sort((left, right) => left.slot - right.slot)}
           onCancel={() => setShowReplaceDialog(false)}
           onReplace={(slot) => {
             void runStart(async () => {
               setShowReplaceDialog(false);
-              await startCareer(slot);
+              const selected = slots.find((entry) => entry.slot === slot);
+              if (!selected || selected.origin !== 'local' || selected.health !== 'healthy') return;
+              await startCareer(slot, selected.meta.revision);
             });
           }}
         />

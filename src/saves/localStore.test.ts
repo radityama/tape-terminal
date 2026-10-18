@@ -1,5 +1,5 @@
 import 'fake-indexeddb/auto';
-import { beforeEach, test } from 'vitest';
+import { beforeEach, test, vi } from 'vitest';
 import assert from 'node:assert/strict';
 import { MarketSimulationEngine } from '../engine/market';
 import { SaveGame, SCHEMA_VERSION } from './schema';
@@ -70,4 +70,22 @@ test('corrupted and newer saves stay in IndexedDB after a failed load', async ()
   await db.savedGames.put({ id: 'slot_1', name: 'Future', seed: 'x', mode: 'career', payload: newer });
   await assert.rejects(store.get(1), SaveVersionError);
   assert.equal((await db.savedGames.get('slot_1'))?.payload, newer);
+});
+
+test('unreadable and future records remain occupied and raw exportable', async () => {
+  await db.savedGames.put({ id: 'slot_1', name: 'Damaged', seed: 'x', mode: 'career', payload: '{' });
+  await db.savedGames.put({ id: 'slot_2', name: 'Future', seed: 'x', mode: 'career', payload: JSON.stringify({ schemaVersion: SCHEMA_VERSION + 1 }) });
+  const slots = await store.inspectSlots();
+  assert.deepEqual(slots.map(({ meta, health }) => [meta.slot, health]), [[1, 'corrupt'], [2, 'unsupported_version']]);
+  assert.equal((await store.list()).length, 2);
+  assert.equal(await store.exportRaw(1), '{');
+  assert.equal((await store.put(save(1), { force: true })).ok, false);
+  assert.equal((await db.savedGames.get('slot_1'))?.payload, '{');
+});
+
+test('inspection distinguishes verified emptiness from a storage read error', async () => {
+  assert.deepEqual(await store.inspectSlot(3), { status: 'empty' });
+  const failure = vi.spyOn(db.savedGames, 'get').mockRejectedValueOnce(new Error('IndexedDB unavailable'));
+  assert.deepEqual(await store.inspectSlot(3), { status: 'read_error' });
+  failure.mockRestore();
 });
