@@ -715,22 +715,44 @@ class SaveManagerImpl {
   async keepBoth(slot: number): Promise<{ status: 'kept'; freeSlot: number } | { status: 'full' | 'failed' }> {
     const cloud = this.cloud;
     const generation = this.cloudGeneration;
-    const used = new Set<number>();
-    for (const meta of await this.listSlots()) used.add(meta.slot);
-    if (cloud) {
-      for (const meta of await cloud.list()) used.add(meta.slot);
-    }
-    if (generation !== this.cloudGeneration) return { status: 'failed' };
-    const freeSlot = [1, 2, 3].find((s) => !used.has(s));
-    if (freeSlot === undefined) return { status: 'full' };
-
     const local = await this.store.get(slot);
     if (generation !== this.cloudGeneration) return { status: 'failed' };
-    if (local) {
-      const copy = { ...local, slot: freeSlot, id: `slot_${freeSlot}`, name: `${local.name} (this device)`.slice(0, 40) };
+    if (!local) return { status: 'failed' };
+    const copyName = `${local.name} (this device)`.slice(0, 40);
+    const localSlots = await this.listSlots();
+    const cloudSlots = cloud ? await cloud.list() : [];
+    if (generation !== this.cloudGeneration) return { status: 'failed' };
+    const used = new Set([...localSlots, ...cloudSlots].map((meta) => meta.slot));
+    let freeSlot: number | undefined;
+    let alreadyLocal = false;
+
+    // A previous attempt may have copied locally before the cloud write failed. Reuse
+    // that exact copy on retry rather than filling another slot with a duplicate.
+    for (const meta of localSlots) {
+      if (meta.slot === slot || meta.name !== copyName) continue;
+      const previous = await this.store.get(meta.slot);
+      if (generation !== this.cloudGeneration) return { status: 'failed' };
+      if (previous && previous.createdAt === local.createdAt && previous.seed === local.seed
+        && previous.seq === local.seq && JSON.stringify(previous.game) === JSON.stringify(local.game)) {
+        freeSlot = meta.slot;
+        alreadyLocal = true;
+        break;
+      }
+    }
+    freeSlot ??= [1, 2, 3].find((candidate) => !used.has(candidate));
+    if (freeSlot === undefined) return { status: 'full' };
+
+    const copy = { ...local, slot: freeSlot, id: `slot_${freeSlot}`, name: copyName };
+    if (!alreadyLocal) {
       const localResult = await this.store.put(copy);
       if (!localResult.ok) return { status: 'failed' };
-      if (cloud) {
+    }
+    if (cloud) {
+      const existing = cloudSlots.some((meta) => meta.slot === freeSlot) ? await cloud.get(freeSlot) : null;
+      if (generation !== this.cloudGeneration) return { status: 'failed' };
+      if (existing && (existing.createdAt !== copy.createdAt || existing.seed !== copy.seed
+        || existing.seq !== copy.seq || JSON.stringify(existing.game) !== JSON.stringify(copy.game))) return { status: 'failed' };
+      if (!existing) {
         const cloudResult = await cloud.put(copy, { expectedRevision: undefined });
         if (!cloudResult.ok) return { status: 'failed' };
       }
