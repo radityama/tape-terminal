@@ -62,3 +62,49 @@ test('zero rows updated with a missing cloud row does not resurrect a deleted sl
   expect(result).toEqual({ ok: false, reason: 'conflict', remoteRevision: 0 });
   expect(actions).toEqual(['update', 'select']);
 });
+
+test('cloud deletion checks returned errors, verifies absence and restricts ownership', async () => {
+  const deleteFilters: Array<[string, unknown]> = [];
+  const verifyFilters: Array<[string, unknown]> = [];
+  let deletion: { error: { message: string } | null } = { error: null };
+  let remaining: unknown = null;
+  const deleteQuery = {
+    eq(key: string, value: unknown) { deleteFilters.push([key, value]); return deleteQuery; },
+    select() { return deleteQuery; },
+    then(resolve: (value: typeof deletion) => void) { resolve(deletion); },
+  };
+  const verifyQuery = {
+    eq(key: string, value: unknown) { verifyFilters.push([key, value]); return verifyQuery; },
+    maybeSingle: async () => ({ data: remaining, error: null }),
+  };
+  const client = { from: () => ({ delete: () => deleteQuery, select: () => verifyQuery }) } as unknown as SupabaseClient;
+  const store = new CloudSaveStore(client, 'owner-a');
+  await store.delete(2);
+  expect(deleteFilters).toContainEqual(['user_id', 'owner-a']);
+  expect(deleteFilters).toContainEqual(['slot', 2]);
+  expect(verifyFilters).toContainEqual(['user_id', 'owner-a']);
+  deletion = { error: { message: 'provider details' } };
+  await expect(store.delete(2)).rejects.toThrow('Cloud save deletion failed');
+  deletion = { error: null };
+  remaining = { slot: 2 };
+  await expect(store.delete(2)).rejects.toThrow('Cloud save still exists');
+});
+
+test('cloud reads filter by owner and metadata errors are not treated as empty', async () => {
+  const filters: Array<[string, unknown]> = [];
+  let error: { code: string; message: string } | null = null;
+  const query = {
+    eq(key: string, value: unknown) { filters.push([key, value]); return query; },
+    maybeSingle: async () => ({ data: null, error }),
+  };
+  const client = { from: () => ({ select: () => query }) } as unknown as SupabaseClient;
+  const store = new CloudSaveStore(client, 'owner-a');
+  expect(await store.get(2)).toBeNull();
+  expect(filters).toContainEqual(['user_id', 'owner-a']);
+  expect(filters).toContainEqual(['slot', 2]);
+  filters.length = 0;
+  error = { code: 'PGRST001', message: 'provider detail' };
+  await expect(store.getMeta(3)).rejects.toMatchObject({ message: 'Could not inspect the cloud save.', cause: error });
+  expect(filters).toContainEqual(['user_id', 'owner-a']);
+  expect(filters).toContainEqual(['slot', 3]);
+});

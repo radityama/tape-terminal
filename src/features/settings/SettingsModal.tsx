@@ -2,7 +2,8 @@
 
 import React, { useState, useEffect } from 'react';
 import { useTerminalStore } from '../../store/useTerminalStore';
-import { saveManager, LoadOutcome, MergedSlot } from '../../saves/manager';
+import { saveManager, MergedSlot } from '../../saves/manager';
+import { loadFailureMessage } from '../../saves/loadFeedback';
 import { SaveMeta } from '../../saves/schema';
 import { SaveStatusRow } from '../auth/SyncIndicator';
 import { ConfirmDialog, Dialog } from '../dialog/Dialog';
@@ -42,13 +43,6 @@ export function SettingsModal() {
 
   if (activeModal !== 'settings' || !snapshot) return null;
 
-  const loadFailureMessage = (outcome: LoadOutcome) => {
-    if (outcome.ok) return '';
-    if (outcome.reason === 'missing') return 'That save slot is empty.';
-    if (outcome.reason === 'newer') return 'This save was made by a newer version of TAPE. Update to load it.';
-    return 'This save is damaged and was not changed. You can still export the raw file.';
-  };
-
   const handleManualSave = async (slot: number) => {
     const result = await saveManager.save(slot);
     if (result.ok) {
@@ -69,12 +63,16 @@ export function SettingsModal() {
   };
 
   const handleLoadSave = async (slot: number) => {
-    const outcome = await saveManager.load(slot);
-    if (outcome.ok) {
-      addToast({ title: 'Game Loaded', message: `Restored session from ${outcome.save.name}.`, type: 'info' });
-      setActiveModal('none');
-    } else {
-      addToast({ title: 'Load Failed', message: loadFailureMessage(outcome), type: 'error' });
+    try {
+      const outcome = await saveManager.load(slot);
+      if (outcome.ok) {
+        addToast({ title: 'Game Loaded', message: `Restored session from ${outcome.save.name}.`, type: 'info' });
+        setActiveModal('none');
+      } else {
+        addToast({ title: 'Load Failed', message: loadFailureMessage(outcome), type: 'error' });
+      }
+    } catch {
+      addToast({ title: 'Load Failed', message: 'Could not verify the local and cloud saves. Retry when storage is available.', type: 'error' });
     }
   };
 
