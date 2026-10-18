@@ -130,3 +130,13 @@ test('a failed replacement transaction leaves the original row and backups uncha
   assert.deepEqual(await db.savedGames.get('slot_1'), original);
   assert.equal(await db.backups.where('slot').equals(1).count(), 0);
 });
+
+test.each([
+  { payload: '{', revision: 0 },
+  { payload: JSON.stringify({ schemaVersion: SCHEMA_VERSION + 1 }), revision: 9 },
+])('explicit replacement preserves an unhealthy raw row at revision $revision', async ({ payload, revision }) => {
+  await db.savedGames.put({ id: 'slot_1', name: 'Protected', seed: 'x', mode: 'career', payload, revision });
+  assert.deepEqual(await store.replace(save(1), revision), { ok: true, revision: revision + 1 });
+  assert.equal((await db.backups.where('slot').equals(1).first())?.payload, payload);
+  assert.equal((await store.get(1))?.revision, revision + 1);
+});
