@@ -19,7 +19,7 @@ export function ToastContainer() {
         return (
           <div
             key={t.id}
-            className={`pointer-events-auto p-3 rounded-[2px] border shadow-2xl flex items-start space-x-2.5 transition-all duration-150 bg-[var(--bg-1)] font-sans ${
+            className={`pointer-events-auto p-3 rounded-[2px] border shadow-float flex items-start space-x-2.5 transition-all duration-150 bg-[var(--bg-1)] font-sans ${
               isSuccess
                 ? 'border-[var(--up)] text-[var(--up)]'
                 : isError

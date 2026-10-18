@@ -17,8 +17,8 @@ export function EndOfDayModal() {
   const isProfit = report.netPnl >= 0;
 
   return (
-    <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4 font-sans select-none">
-      <div className="bg-[var(--bg-1)] border border-[var(--line-strong)] rounded-[2px] max-w-lg w-full p-4 space-y-4 shadow-2xl">
+    <div className="fixed inset-0 bg-[var(--bg-0)]/80 flex items-center justify-center z-50 p-4 font-sans select-none">
+      <div className="bg-[var(--bg-1)] border border-[var(--line-strong)] rounded-[2px] max-w-lg w-full p-4 space-y-4 shadow-float">
         {/* Header */}
         <div className="flex justify-between items-center border-b border-[var(--line)] pb-2">
           <div>
@@ -99,7 +99,7 @@ export function EndOfDayModal() {
         <div className="flex justify-end pt-2">
           <button
             onClick={dismissEodReport}
-            className="px-4 py-1.5 bg-[var(--accent)] hover:brightness-105 text-black font-semibold font-mono text-[11px] rounded-[2px] cursor-pointer"
+            className="px-4 py-1.5 bg-[var(--accent)] hover:brightness-105 text-[var(--bg-0)] font-semibold font-mono text-[11px] rounded-[2px] cursor-pointer"
           >
             Continue Trading (Esc)
           </button>

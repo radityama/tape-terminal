@@ -413,7 +413,7 @@ export function OrderTicket() {
 
       {/* Confirmation Modal for Large Orders (> 25% Equity) */}
       {showConfirmModal && (
-        <div className="fixed inset-0 bg-black/75 flex items-center justify-center z-50 p-4">
+        <div className="fixed inset-0 bg-[var(--bg-0)]/80 flex items-center justify-center z-50 p-4">
           <div className="bg-[var(--bg-1)] border border-[var(--accent)] rounded-[2px] max-w-sm w-full p-4 space-y-3 font-sans">
             <div className="text-[14px] font-bold text-[var(--accent)] font-mono">
               Large Position Warning
@@ -435,7 +435,7 @@ export function OrderTicket() {
               </button>
               <button
                 onClick={executeOrderPlacement}
-                className="px-3 py-1 bg-[var(--accent)] hover:brightness-105 text-black font-semibold rounded-[2px] text-[11px] cursor-pointer"
+                className="px-3 py-1 bg-[var(--accent)] hover:brightness-105 text-[var(--bg-0)] font-semibold rounded-[2px] text-[11px] cursor-pointer"
               >
                 Confirm Order
               </button>

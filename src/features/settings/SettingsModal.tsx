@@ -272,7 +272,7 @@ export function SettingsModal() {
               />
               <button
                 onClick={handleApplySeed}
-                className="px-3 py-1 bg-[var(--accent)] text-black font-semibold font-mono text-[11px] rounded-[2px] cursor-pointer"
+                className="px-3 py-1 bg-[var(--accent)] text-[var(--bg-0)] font-semibold font-mono text-[11px] rounded-[2px] cursor-pointer"
               >
                 Apply Seed & Restart
               </button>
@@ -317,7 +317,7 @@ export function SettingsModal() {
                   </button>
                   <button
                     onClick={handleImportSubmit}
-                    className="px-3 py-1 bg-[var(--accent)] text-black text-[10px] font-semibold rounded-[2px] cursor-pointer"
+                    className="px-3 py-1 bg-[var(--accent)] text-[var(--bg-0)] text-[10px] font-semibold rounded-[2px] cursor-pointer"
                   >
                     Confirm Import
                   </button>
@@ -354,7 +354,7 @@ export function SettingsModal() {
                         <>
                           <button
                             onClick={() => handleLoadSave(slot)}
-                            className="px-2 py-1 bg-[var(--accent)] hover:brightness-105 text-black font-semibold rounded-[2px] text-[10px] cursor-pointer"
+                            className="px-2 py-1 bg-[var(--accent)] hover:brightness-105 text-[var(--bg-0)] font-semibold rounded-[2px] text-[10px] cursor-pointer"
                           >
                             Load
                           </button>

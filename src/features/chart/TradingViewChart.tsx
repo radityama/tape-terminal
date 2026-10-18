@@ -295,7 +295,7 @@ export function TradingViewChart() {
               onClick={() => handleTimeframeChange(tf)}
               className={`px-1.5 py-0.5 text-[10px] font-mono rounded-[2px] transition-colors cursor-pointer ${
                 activeTab === tf
-                  ? 'bg-[var(--accent)] text-black font-semibold'
+                  ? 'bg-[var(--accent)] text-[var(--bg-0)] font-semibold'
                   : 'text-[var(--text-3)] hover:text-[var(--text-1)]'
               }`}
             >

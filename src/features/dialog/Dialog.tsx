@@ -79,7 +79,7 @@ export function Dialog({ title, onClose, children, width = 'max-w-md', descripti
 
   return (
     <div
-      className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4 font-sans select-none"
+      className="fixed inset-0 bg-[var(--bg-0)]/80 flex items-center justify-center z-50 p-4 font-sans"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) closeRef.current();
       }}
@@ -91,7 +91,7 @@ export function Dialog({ title, onClose, children, width = 'max-w-md', descripti
         aria-modal="true"
         aria-labelledby={titleId}
         aria-describedby={descriptionId}
-        className={`bg-[var(--bg-1)] border border-[var(--line-strong)] rounded-[2px] ${width} w-full max-h-[85vh] flex flex-col shadow-2xl overflow-hidden`}
+        className={`bg-[var(--bg-1)] border border-[var(--line-strong)] rounded-[2px] ${width} w-full max-h-[85vh] flex flex-col shadow-float overflow-hidden`}
       >
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-[var(--line)]">
           <h2 id={titleId} className="text-[12px] uppercase tracking-wide text-[var(--text-1)]">
@@ -141,7 +141,7 @@ export function ConfirmDialog({ title, children, confirmLabel, onConfirm, onCanc
           type="button"
           onClick={onConfirm}
           disabled={busy}
-          className="h-[30px] px-3 rounded-[2px] bg-[var(--accent)] text-black text-[12px] font-medium hover:brightness-110 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+          className="h-[30px] px-3 rounded-[2px] bg-[var(--accent)] text-[var(--bg-0)] text-[12px] font-medium hover:brightness-110 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
         >
           {confirmLabel}
         </button>

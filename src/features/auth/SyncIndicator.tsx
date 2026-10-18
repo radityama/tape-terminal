@@ -134,7 +134,7 @@ export function GuestNudge() {
   };
 
   return (
-    <div className="fixed bottom-3 left-1/2 -translate-x-1/2 z-40 flex items-center space-x-2 bg-[var(--bg-1)] border border-[var(--line-strong)] rounded-[2px] px-3 py-2 shadow-2xl text-[11px] text-[var(--text-1)]">
+    <div className="fixed bottom-3 left-1/2 -translate-x-1/2 z-40 flex items-center space-x-2 bg-[var(--bg-1)] border border-[var(--line-strong)] rounded-[2px] px-3 py-2 shadow-float text-[11px] text-[var(--text-1)]">
       <span>Saves live in this browser only. Sign in to back them up.</span>
       <button
         onClick={() => {

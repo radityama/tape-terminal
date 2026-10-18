@@ -82,7 +82,7 @@ function ReplaceSlotDialog({
           type="button"
           disabled={!chosen}
           onClick={() => chosen && onReplace(chosen.slot)}
-          className="h-[30px] px-3 rounded-[2px] bg-[var(--accent)] text-black text-[12px] font-medium hover:brightness-110 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+          className="h-[30px] px-3 rounded-[2px] bg-[var(--accent)] text-[var(--bg-0)] text-[12px] font-medium hover:brightness-110 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
         >
           {chosen
             ? `Replace ${chosen.meta.name} (Day ${chosen.meta.simDay}, $${chosen.meta.equity.toLocaleString()})`
@@ -317,9 +317,6 @@ export default function TitlePage() {
               <span className="font-mono text-[11px] font-bold tracking-wider uppercase text-[var(--accent)] bg-[var(--bg-2)] border border-[var(--line)] px-2 py-0.5 rounded-[2px]">
                 STOCKS EDITION
               </span>
-              <span className="text-[11px] font-mono text-[var(--text-3)]">
-                CLIENT-SIDE SIMULATION
-              </span>
             </div>
 
             <h1 className="text-4xl md:text-5xl font-extrabold tracking-tight font-mono text-[var(--text-1)]">
@@ -335,7 +332,7 @@ export default function TitlePage() {
           <div className="bg-[var(--bg-1)] p-4 border border-[var(--line)] rounded-[2px] space-y-3 font-mono text-[12px] max-w-md">
             <div>
               <label className="text-[10px] uppercase text-[var(--text-3)] block mb-1">
-                Universe Seed
+                Universe seed
               </label>
               <input
                 type="text"
@@ -348,7 +345,7 @@ export default function TitlePage() {
 
             <div>
               <label className="text-[10px] uppercase text-[var(--text-3)] block mb-1">
-                Difficulty Preset
+                Difficulty preset
               </label>
               <div className="grid grid-cols-3 gap-1">
                 {(['learner', 'standard', 'hardcore'] as const).map((d) => (
@@ -357,7 +354,7 @@ export default function TitlePage() {
                     onClick={() => setDifficultySelect(d)}
                     className={`py-1 text-center capitalize rounded-[2px] border text-[11px] cursor-pointer transition-colors ${
                       difficultySelect === d
-                        ? 'bg-[var(--accent)] text-black font-semibold border-[var(--accent)]'
+                        ? 'bg-[var(--accent)] text-[var(--bg-0)] font-semibold border-[var(--accent)]'
                         : 'bg-[var(--bg-0)] text-[var(--text-3)] border-[var(--line)] hover:text-[var(--text-1)]'
                     }`}
                   >
@@ -372,7 +369,7 @@ export default function TitlePage() {
               <button
                 onClick={() => void handleStartCareer()}
                 disabled={starting || !authReady || !slotsReady}
-                className="w-full py-2.5 bg-[var(--accent)] hover:brightness-105 active:translate-y-[1px] text-black font-bold text-[13px] rounded-[2px] flex items-center justify-center space-x-2 cursor-pointer transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                className="w-full py-2.5 bg-[var(--accent)] hover:brightness-105 active:translate-y-[1px] text-[var(--bg-0)] font-bold text-[13px] rounded-[2px] flex items-center justify-center space-x-2 cursor-pointer transition-all disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <span>{starting ? 'Creating career...' : 'Start New Career ($100k)'}</span>
                 <CaretRight size={14} weight="bold" />
@@ -476,7 +473,7 @@ export default function TitlePage() {
         </div>
 
         {/* Right: Live Simulated Price Ladder (5 cols) */}
-        <div className="lg:col-span-5 bg-[var(--bg-1)] border border-[var(--line)] rounded-[2px] p-3 shadow-2xl font-mono text-[11px]">
+        <div className="lg:col-span-5 bg-[var(--bg-1)] border border-[var(--line)] rounded-[2px] p-3 shadow-float font-mono text-[11px]">
           <div className="flex items-center border-b border-[var(--line)] pb-2 mb-2">
             <span className="text-[10px] uppercase text-[var(--text-3)] tracking-wider">
               Market Depth Tape (Live Tick)

@@ -15,7 +15,7 @@ import { SaveMeta } from '../../saves/schema';
 import { ConfirmDialog, Dialog } from '../dialog/Dialog';
 
 const primaryBtn =
-  'w-full h-[30px] rounded-[2px] bg-[var(--accent)] text-black text-[12px] font-medium flex items-center justify-center space-x-1.5 cursor-pointer hover:brightness-110 disabled:opacity-50 disabled:cursor-not-allowed';
+  'w-full h-[30px] rounded-[2px] bg-[var(--accent)] text-[var(--bg-0)] text-[12px] font-medium flex items-center justify-center space-x-1.5 cursor-pointer hover:brightness-110 disabled:opacity-50 disabled:cursor-not-allowed';
 const secondaryBtn =
   'w-full h-[30px] rounded-[2px] bg-[var(--bg-2)] border border-[var(--line)] text-[12px] text-[var(--text-1)] flex items-center justify-center space-x-1.5 cursor-pointer hover:bg-[var(--line)]';
 

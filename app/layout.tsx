@@ -36,7 +36,7 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className={`${ibmPlexSans.variable} ${jetbrainsMono.variable} dark`}>
-      <body className="bg-[var(--bg-0)] text-[var(--text-1)] font-sans antialiased selection:bg-[var(--accent)] selection:text-black min-h-[100dvh]" suppressHydrationWarning>
+      <body className="bg-[var(--bg-0)] text-[var(--text-1)] font-sans antialiased selection:bg-[var(--accent)] selection:text-[var(--bg-0)] min-h-[100dvh]" suppressHydrationWarning>
         {children}
       </body>
     </html>

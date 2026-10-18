@@ -36,8 +36,8 @@ export function CompanyModal() {
   const relatedNews = (snapshot?.activeNews || []).filter((n) => n.ticker === company.ticker);
 
   return (
-    <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4 font-sans select-none">
-      <div className="bg-[var(--bg-1)] border border-[var(--line-strong)] rounded-[2px] max-w-2xl w-full p-4 space-y-4 shadow-2xl">
+    <div className="fixed inset-0 bg-[var(--bg-0)]/80 flex items-center justify-center z-50 p-4 font-sans select-none">
+      <div className="bg-[var(--bg-1)] border border-[var(--line-strong)] rounded-[2px] max-w-2xl w-full p-4 space-y-4 shadow-float">
         {/* Header */}
         <div className="flex justify-between items-start border-b border-[var(--line)] pb-3">
           <div>
@@ -146,7 +146,7 @@ export function CompanyModal() {
               setSelectedTicker(company.ticker);
               setActiveModal('none');
             }}
-            className="px-3 py-1 bg-[var(--accent)] hover:brightness-105 text-black font-semibold rounded-[2px] text-[11px] font-mono cursor-pointer"
+            className="px-3 py-1 bg-[var(--accent)] hover:brightness-105 text-[var(--bg-0)] font-semibold rounded-[2px] text-[11px] font-mono cursor-pointer"
           >
             Load in Terminal
           </button>

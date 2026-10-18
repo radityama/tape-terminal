@@ -72,7 +72,7 @@ export function TopBar() {
           <button
             onClick={() => setSimSpeed(0)}
             className={`px-1.5 py-0.5 rounded-[2px] text-[10px] font-mono flex items-center space-x-1 transition-colors cursor-pointer ${
-              speed === 0 ? 'bg-[var(--accent)] text-black font-semibold' : 'text-[var(--text-2)] hover:text-[var(--text-1)]'
+              speed === 0 ? 'bg-[var(--accent)] text-[var(--bg-0)] font-semibold' : 'text-[var(--text-2)] hover:text-[var(--text-1)]'
             }`}
             title="Pause simulation (Space)"
             aria-label="Pause simulation"
@@ -83,7 +83,7 @@ export function TopBar() {
           <button
             onClick={() => setSimSpeed(1)}
             className={`px-1.5 py-0.5 rounded-[2px] text-[10px] font-mono flex items-center space-x-1 transition-colors cursor-pointer ${
-              speed === 1 ? 'bg-[var(--accent)] text-black font-semibold' : 'text-[var(--text-2)] hover:text-[var(--text-1)]'
+              speed === 1 ? 'bg-[var(--accent)] text-[var(--bg-0)] font-semibold' : 'text-[var(--text-2)] hover:text-[var(--text-1)]'
             }`}
             title="1x Normal speed"
             aria-label="Normal speed"
@@ -94,7 +94,7 @@ export function TopBar() {
           <button
             onClick={() => setSimSpeed(5)}
             className={`hidden sm:flex px-1.5 py-0.5 rounded-[2px] text-[10px] font-mono items-center space-x-1 transition-colors cursor-pointer ${
-              speed === 5 ? 'bg-[var(--accent)] text-black font-semibold' : 'text-[var(--text-2)] hover:text-[var(--text-1)]'
+              speed === 5 ? 'bg-[var(--accent)] text-[var(--bg-0)] font-semibold' : 'text-[var(--text-2)] hover:text-[var(--text-1)]'
             }`}
             title="5x Fast speed"
             aria-label="5x Fast speed"
@@ -105,7 +105,7 @@ export function TopBar() {
           <button
             onClick={() => setSimSpeed(20)}
             className={`hidden md:flex px-1.5 py-0.5 rounded-[2px] text-[10px] font-mono items-center space-x-1 transition-colors cursor-pointer ${
-              speed === 20 ? 'bg-[var(--accent)] text-black font-semibold' : 'text-[var(--text-2)] hover:text-[var(--text-1)]'
+              speed === 20 ? 'bg-[var(--accent)] text-[var(--bg-0)] font-semibold' : 'text-[var(--text-2)] hover:text-[var(--text-1)]'
             }`}
             title="20x Turbo speed"
             aria-label="20x Turbo speed"
@@ -207,7 +207,7 @@ export function TopBar() {
 
           <button
             onClick={restartTutorial}
-            className="p-1.5 rounded-[2px] bg-[var(--bg-2)] hover:bg-[var(--accent)] text-[var(--text-2)] hover:text-black border border-[var(--line)] cursor-pointer transition-colors"
+            className="p-1.5 rounded-[2px] bg-[var(--bg-2)] hover:bg-[var(--accent)] text-[var(--text-2)] hover:text-[var(--bg-0)] border border-[var(--line)] cursor-pointer transition-colors"
             title="Replay Interactive Tutorial"
             aria-label="Replay Tutorial"
           >

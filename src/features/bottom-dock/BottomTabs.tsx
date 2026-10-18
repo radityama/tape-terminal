@@ -410,7 +410,7 @@ export function BottomTabs() {
 
             {/* Rival Inspector Modal */}
             {selectedRival && (
-              <div className="fixed inset-0 bg-black/75 flex items-center justify-center z-50 p-4 font-sans">
+              <div className="fixed inset-0 bg-[var(--bg-0)]/80 flex items-center justify-center z-50 p-4 font-sans">
                 <div className="bg-[var(--bg-1)] border border-[var(--line-strong)] rounded-[2px] max-w-md w-full p-4 space-y-3">
                   <div className="flex justify-between items-center border-b border-[var(--line)] pb-2">
                     <div>
