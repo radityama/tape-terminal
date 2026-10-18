@@ -135,7 +135,7 @@ test('valid market and pending orders still execute and keep their quantities', 
 test('a restored partially filled order executes only its remaining shares', () => {
   const engine = new MarketSimulationEngine('G0_PARTIAL', 1000000);
   assert.equal(engine.placeOrder({ ticker: 'VCRX', side: 'buy', type: 'market', quantity: 997 }).success, true);
-  const placed = engine.placeOrder({ ticker: 'VCRX', side: 'buy', type: 'limit', quantity: 1000, limitPrice: 1000 });
+  const placed = engine.placeOrder({ ticker: 'VCRX', side: 'buy', type: 'limit', quantity: 1000, limitPrice: 1000, takeProfitPrice: 3000, stopLossPrice: 1 });
   assert.equal(placed.success, true);
   const saved = engine.exportState();
   const pending = saved.openOrders.find((order) => order.id === placed.orderId)!;
@@ -154,6 +154,7 @@ test('a restored partially filled order executes only its remaining shares', () 
   assert.equal(after.recentTrades[0].commission, 1.5);
   assert.equal(after.positions.find((position) => position.ticker === 'VCRX')?.shares, 1000);
   assert.equal(before.portfolio.positions.find((position) => position.ticker === 'VCRX')?.shares, 997);
+  assert.deepEqual(after.openOrders.filter((order) => order.ticker === 'VCRX').map((order) => [order.type, order.quantity]), [['limit', 1000], ['stop', 1000]]);
 });
 
 test('a partial sell closes only its remaining long shares', () => {

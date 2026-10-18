@@ -437,7 +437,7 @@ export class MarketSimulationEngine {
           ticker: order.ticker,
           side: tpSide,
           type: 'limit',
-          quantity: remainingShares,
+          quantity: order.quantity,
           limitPrice: order.takeProfitPrice,
           timeInForce: 'GTC',
         });
@@ -449,7 +449,7 @@ export class MarketSimulationEngine {
           ticker: order.ticker,
           side: slSide,
           type: 'stop',
-          quantity: remainingShares,
+          quantity: order.quantity,
           stopPrice: order.stopLossPrice,
           timeInForce: 'GTC',
         });
