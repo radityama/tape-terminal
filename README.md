@@ -152,6 +152,15 @@ To add Forex, Crypto, ETFs, or Options in Phase 2:
   ```bash
   npm run build
   ```
+- **Browser E2E** (disposable local Supabase only):
+  ```bash
+  bunx supabase start
+  bunx supabase migration up --local
+  bun run test:e2e
+  ```
+  The suite generates `.env.e2e.local` from `supabase status`, builds the production app, and refuses to run unless `E2E_LOCAL_SUPABASE=1` is set and Supabase is on `127.0.0.1:54321`. It signs in through real Mailpit magic links, uses unique test accounts, and captures screenshots, video, and traces on failure (`test-results/`, `playwright-report/`).
+
+  Seven specs, 16 scenarios: guest trade and skipped day across reload, resume without rewriting the slot, occupied-slot replacement with a verified backup, corrupted and newer-schema rows (labelled, disabled, raw export), direct `/terminal` recovery, delayed auth hydration on both routes, two-device local/cloud conflicts (Keep both, Keep this device), and the cloud deletion lifecycle (success plus re-enable, failed retry, preflight abort). These run against the production build locally; the CI workflow still runs only install, lint, typecheck, unit tests, and build. Remaining gaps (OAuth, hosted SMTP, sign-out-with-delete, claim uploads, Use cloud, forced IndexedDB write failure) are tracked as `E2E-CI` and `E2E-GAPS` in `docs/ROADMAP.md`.
 
 ---
 
