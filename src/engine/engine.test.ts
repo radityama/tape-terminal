@@ -85,6 +85,7 @@ test('all order types reject invalid quantity and price inputs before changing t
     { type: 'limit' as const }, { type: 'limit' as const, limitPrice: 0 },
     { type: 'limit' as const, limitPrice: Infinity }, { type: 'limit' as const, limitPrice: NaN },
     { type: 'limit' as const, limitPrice: 1e-12 },
+    { type: 'limit' as const, limitPrice: 1e-8 },
     { type: 'stop' as const }, { type: 'stop' as const, stopPrice: -1 },
     { type: 'stop_limit' as const, stopPrice: 100 },
     { type: 'stop_limit' as const, limitPrice: 100 },
@@ -129,6 +130,48 @@ test('valid market and pending orders still execute and keep their quantities', 
   engine.tick(0.05);
   assert.equal(engine.getSnapshot().openOrders.some((o) => o.id === pending.orderId), false);
   assert.equal(engine.getSnapshot().positions.find((p) => p.ticker === 'VCRX')?.shares, 3);
+});
+
+test('a restored partially filled order executes only its remaining shares', () => {
+  const engine = new MarketSimulationEngine('G0_PARTIAL', 1000000);
+  assert.equal(engine.placeOrder({ ticker: 'VCRX', side: 'buy', type: 'market', quantity: 997 }).success, true);
+  const placed = engine.placeOrder({ ticker: 'VCRX', side: 'buy', type: 'limit', quantity: 1000, limitPrice: 1000 });
+  assert.equal(placed.success, true);
+  const saved = engine.exportState();
+  const pending = saved.openOrders.find((order) => order.id === placed.orderId)!;
+  pending.status = 'partially_filled';
+  pending.filledQuantity = 997;
+  pending.commissionPaid = 1.5;
+  const restored = new MarketSimulationEngine(saved.seed, 1000000);
+  restored.importState(saved);
+  const before = restored.exportState();
+
+  restored.tick(0.05);
+
+  const after = restored.getSnapshot();
+  assert.equal(after.openOrders.some((order) => order.id === placed.orderId), false);
+  assert.equal(after.recentTrades[0].shares, 3);
+  assert.equal(after.recentTrades[0].commission, 1.5);
+  assert.equal(after.positions.find((position) => position.ticker === 'VCRX')?.shares, 1000);
+  assert.equal(before.portfolio.positions.find((position) => position.ticker === 'VCRX')?.shares, 997);
+});
+
+test('a partial sell closes only its remaining long shares', () => {
+  const engine = new MarketSimulationEngine('G0_PARTIAL_SELL', 100000);
+  assert.equal(engine.placeOrder({ ticker: 'VCRX', side: 'buy', type: 'market', quantity: 3 }).success, true);
+  const placed = engine.placeOrder({ ticker: 'VCRX', side: 'sell', type: 'limit', quantity: 1000, limitPrice: 1 });
+  assert.equal(placed.success, true);
+  const saved = engine.exportState();
+  const pending = saved.openOrders.find((order) => order.id === placed.orderId)!;
+  pending.status = 'partially_filled';
+  pending.filledQuantity = 997;
+  const restored = new MarketSimulationEngine(saved.seed, 100000);
+  restored.importState(saved);
+
+  restored.tick(0.05);
+
+  assert.equal(restored.getSnapshot().recentTrades[0].shares, 3);
+  assert.equal(restored.getSnapshot().positions.find((position) => position.ticker === 'VCRX'), undefined);
 });
 
 test('Portfolio long execution, mark to market, and PnL calculation', () => {
@@ -181,6 +224,7 @@ test('portfolio rejects invalid internal fills without changing cash, positions 
     { shares: Infinity }, { shares: Number.MAX_SAFE_INTEGER + 1 },
     { price: -1 }, { price: 0 }, { price: NaN }, { price: Infinity },
     { price: 1e-12 },
+    { shares: 1, price: 1e-8 },
     { shares: 10, price: 1e14 }, { commission: NaN }, { slippageDollars: -1 },
     { initialStopPrice: Infinity },
   ];

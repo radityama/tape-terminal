@@ -92,9 +92,11 @@ test('legacy invalid pending orders remain recoverable but cannot fill after imp
   const second = engine.placeOrder({ ticker: 'VCRX', side: 'buy', type: 'stop_limit', quantity: 2, stopPrice: 1, limitPrice: 100000 });
   assert.equal(second.success, true);
   const wire = wireOf(makeSave(engine, 'G0_LEGACY_ORDER'));
-  const orders = (wire as unknown as { game: { openOrders: Array<{ quantity: number; limitPrice?: string }> } }).game.openOrders;
+  const orders = (wire as unknown as { game: { openOrders: Array<{ quantity: number; limitPrice?: string; status: string; filledQuantity: number }> } }).game.openOrders;
   orders[0].quantity = -10;
   delete orders[1].limitPrice;
+  orders[1].status = 'partially_filled';
+  orders[1].filledQuantity = 1;
 
   const loaded = SaveGameSchema.decode(wire);
   assert.deepEqual(wireOf(loaded), wire, 'old save fields must round-trip without normalizing the invalid order');
@@ -111,6 +113,25 @@ test('legacy invalid pending orders remain recoverable but cannot fill after imp
   assert.equal(restored.cancelOrder(placed.orderId!), true, 'player can dismiss the bad order');
   assert.equal(restored.cancelOrder(second.orderId!), true);
   assert.equal(restored.placeOrder({ ticker: 'HLVG', side: 'buy', type: 'market', quantity: 2 }).success, true);
+});
+
+test('a saved partial order retains its progress and only fills its residual quantity', () => {
+  const engine = new MarketSimulationEngine('G0_SAVED_PARTIAL', 1000000);
+  assert.equal(engine.placeOrder({ ticker: 'VCRX', side: 'buy', type: 'market', quantity: 997 }).success, true);
+  assert.equal(engine.placeOrder({ ticker: 'VCRX', side: 'buy', type: 'limit', quantity: 1000, limitPrice: 1000 }).success, true);
+  const wire = wireOf(makeSave(engine, 'G0_SAVED_PARTIAL'));
+  const pending = (wire as unknown as { game: { openOrders: Array<{ status: string; filledQuantity: number; commissionPaid: string }> } }).game.openOrders[0];
+  pending.status = 'partially_filled';
+  pending.filledQuantity = 997;
+  pending.commissionPaid = '1.5';
+  const loaded = SaveGameSchema.decode(wire);
+  assert.deepEqual(wireOf(loaded), wire);
+
+  const restored = new MarketSimulationEngine(loaded.seed, 1000000);
+  restored.importState(loaded.game);
+  restored.tick(0.05);
+  assert.equal(restored.getSnapshot().recentTrades[0].shares, 3);
+  assert.equal(restored.getSnapshot().positions.find((position) => position.ticker === 'VCRX')?.shares, 1000);
 });
 
 test('corrupted or tampered payloads are rejected without crashing', () => {

@@ -290,7 +290,7 @@ export class MarketSimulationEngine {
 
   cancelOrder(orderId: string): boolean {
     const order = this.openOrders.get(orderId);
-    if (order && order.status === 'pending') {
+    if (order && (order.status === 'pending' || order.status === 'partially_filled')) {
       order.status = 'cancelled';
       this.openOrders.delete(orderId);
       this.actionSeq += 1;
@@ -369,7 +369,7 @@ export class MarketSimulationEngine {
 
       // Check open orders for this ticker
       for (const order of this.openOrders.values()) {
-        if (order.ticker === comp.ticker && order.status === 'pending') {
+        if (order.ticker === comp.ticker && (order.status === 'pending' || order.status === 'partially_filled')) {
           this.evaluateOrder(order, depth, priceState.price);
         }
       }
@@ -401,12 +401,13 @@ export class MarketSimulationEngine {
     const fillResult = this.matchingEngine.evaluatePendingOrder(order, depth, currentPrice);
     if (!fillResult || !fillResult.shouldFill) return;
 
-    const commission = this.matchingEngine.calculateCommission(order.quantity, fillResult.fillPrice);
+    const remainingShares = order.quantity - order.filledQuantity;
+    const commission = this.matchingEngine.calculateCommission(remainingShares, fillResult.fillPrice);
     const fillRes = this.portfolioEngine.executeFill({
       orderId: order.id,
       ticker: order.ticker,
       side: order.side,
-      shares: order.quantity,
+      shares: remainingShares,
       price: fillResult.fillPrice,
       commission,
       slippageDollars: fillResult.slippage,
@@ -419,7 +420,7 @@ export class MarketSimulationEngine {
       order.filledQuantity = order.quantity;
       order.filledAt = Date.now();
       order.averageFillPrice = fillResult.fillPrice;
-      order.commissionPaid = commission;
+      order.commissionPaid += commission;
       this.openOrders.delete(order.id);
       this.actionSeq += 1;
 
@@ -436,7 +437,7 @@ export class MarketSimulationEngine {
           ticker: order.ticker,
           side: tpSide,
           type: 'limit',
-          quantity: order.quantity,
+          quantity: remainingShares,
           limitPrice: order.takeProfitPrice,
           timeInForce: 'GTC',
         });
@@ -448,7 +449,7 @@ export class MarketSimulationEngine {
           ticker: order.ticker,
           side: slSide,
           type: 'stop',
-          quantity: order.quantity,
+          quantity: remainingShares,
           stopPrice: order.stopLossPrice,
           timeInForce: 'GTC',
         });

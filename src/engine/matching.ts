@@ -36,7 +36,8 @@ export function validOrderValue(shares: number, price: number): boolean {
     && shares > 0
     && Number.isFinite(price)
     && price >= 1e-8 // Save decimals have eight places; smaller prices would reload as zero.
-    && Number.isSafeInteger(Math.round(shares * price * 100));
+    && Number.isSafeInteger(Math.round(shares * price * 100))
+    && Math.round(shares * price * 100) > 0;
 }
 
 export function validateOrderInput(order: Pick<Order, 'type' | 'quantity'> & Partial<Pick<Order,
@@ -64,12 +65,12 @@ export function validateOrderInput(order: Pick<Order, 'type' | 'quantity'> & Par
 }
 
 export function isValidPendingOrder(order: Order): boolean {
-  return !validateOrderInput(order)
-    && Number.isSafeInteger(order.filledQuantity)
+  return Number.isSafeInteger(order.filledQuantity)
     && order.filledQuantity >= 0
     && order.filledQuantity < order.quantity
-    && (order.highestPriceObserved === undefined || validOrderValue(1, order.highestPriceObserved))
-    && (order.lowestPriceObserved === undefined || validOrderValue(1, order.lowestPriceObserved));
+    && !validateOrderInput(order)
+    && (order.highestPriceObserved === undefined || validOrderValue(order.quantity - order.filledQuantity, order.highestPriceObserved))
+    && (order.lowestPriceObserved === undefined || validOrderValue(order.quantity - order.filledQuantity, order.lowestPriceObserved));
 }
 
 export interface TradeRecord {
