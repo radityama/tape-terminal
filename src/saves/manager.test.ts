@@ -656,6 +656,28 @@ test('equal progress with different content enters conflict without restoring ei
   expect((await new LocalSaveStore().get(1))?.game.portfolio.positions).toHaveLength(0);
 });
 
+test.each([
+  { payload: '{', reason: 'corrupt' },
+  { payload: JSON.stringify({ schemaVersion: SCHEMA_VERSION + 1 }), reason: 'newer' },
+])('a protected local row remains in recovery even when a cloud copy exists: $reason', async ({ payload, reason }) => {
+  await db.savedGames.put({ id: 'slot_1', name: 'Protected', seed: 'MGR_TEST', mode: 'career', payload, revision: 1 });
+  const remote = saveGame(1, 9, 1, 0);
+  saveManager.setCloudStore({ ...profileCloud().cloud,
+    getMeta: async () => ({ slot: 1, name: remote.name, seed: remote.seed, mode: remote.mode, rank: null, equity: 100000, simDay: 1, updatedAt: 1, revision: 1, deviceId: remote.deviceId }),
+    get: async () => remote,
+  } as never);
+  expect(await saveManager.load(1)).toMatchObject({ ok: false, reason });
+  expect(restored).toEqual([]);
+  expect((await db.savedGames.get('slot_1'))?.payload).toBe(payload);
+});
+
+test('a cloud metadata failure cannot be mistaken for a missing cloud save', async () => {
+  await new LocalSaveStore().put(saveGame(1, 9, 1, 0));
+  saveManager.setCloudStore({ ...profileCloud().cloud, getMeta: async () => { throw new Error('unavailable'); } } as never);
+  await expect(saveManager.load(1)).rejects.toThrow('unavailable');
+  expect(restored).toEqual([]);
+});
+
 test('account change during cloud loading prevents restoration', async () => {
   const remote = saveGame(1, 9, 1, 0);
   let current = true;

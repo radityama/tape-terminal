@@ -69,12 +69,16 @@ export function SettingsModal() {
   };
 
   const handleLoadSave = async (slot: number) => {
-    const outcome = await saveManager.load(slot);
-    if (outcome.ok) {
-      addToast({ title: 'Game Loaded', message: `Restored session from ${outcome.save.name}.`, type: 'info' });
-      setActiveModal('none');
-    } else {
-      addToast({ title: 'Load Failed', message: loadFailureMessage(outcome), type: 'error' });
+    try {
+      const outcome = await saveManager.load(slot);
+      if (outcome.ok) {
+        addToast({ title: 'Game Loaded', message: `Restored session from ${outcome.save.name}.`, type: 'info' });
+        setActiveModal('none');
+      } else {
+        addToast({ title: 'Load Failed', message: loadFailureMessage(outcome), type: 'error' });
+      }
+    } catch {
+      addToast({ title: 'Load Failed', message: 'Could not verify the local and cloud saves. Retry when storage is available.', type: 'error' });
     }
   };
 
@@ -160,7 +164,7 @@ export function SettingsModal() {
     }
     if (current) {
       if (current.health !== 'healthy' || current.origin !== 'local') {
-        addToast({ title: 'Slot Protected', message: 'This slot cannot be replaced here. Inspect or export the save on the title screen.', type: 'error' });
+        addToast({ title: 'Slot Protected', message: 'Cloud-linked or unreadable slots cannot be replaced here. Return to the title screen to inspect or export the save.', type: 'error' });
         return;
       }
       setPendingSeed({ seed: seedValue, save: current });
