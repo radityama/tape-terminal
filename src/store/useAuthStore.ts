@@ -54,6 +54,19 @@ function toUser(user: User): AuthUser {
   return { id: user.id, email: user.email ?? null, providers };
 }
 
+function wireCloud(user: User | null): void {
+  if (user) {
+    if (cloudUserId === user.id) return;
+    cloudUserId = user.id;
+    if (client) saveManager.setCloudStore(new CloudSaveStore(client, user.id));
+    void saveManager.syncProfile();
+  } else {
+    if (cloudUserId === null && !saveManager.hasCloud()) return;
+    cloudUserId = null;
+    saveManager.setCloudStore(null);
+  }
+}
+
 export const useAuthStore = create<AuthState>((set, get) => ({
   configured: false,
   ready: false,
@@ -82,19 +95,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
     set({ configured: true });
 
-    const wireCloud = (user: User | null) => {
-      if (user) {
-        if (cloudUserId === user.id) return;
-        cloudUserId = user.id;
-        saveManager.setCloudStore(new CloudSaveStore(client as SupabaseClient, user.id));
-        void saveManager.syncProfile();
-      } else {
-        if (cloudUserId === null && !saveManager.hasCloud()) return;
-        cloudUserId = null;
-        saveManager.setCloudStore(null);
-      }
-    };
-
     const initialEventId = authEventId;
     void client.auth.getSession().then(({ data, error }) => {
       if (authEventId !== initialEventId) return;
@@ -105,7 +105,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       const user = data.session?.user ?? null;
       wireCloud(user);
       set({ ready: true, hydrationError: false, signedIn: !!user, user: user ? toUser(user) : null });
-    }).catch(() => set({ ready: true, hydrationError: true }));
+    }).catch(() => {
+      if (authEventId === initialEventId) set({ ready: true, hydrationError: true });
+    });
 
     client.auth.onAuthStateChange((event, session) => {
       if (event === 'INITIAL_SESSION') return;
@@ -125,11 +127,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       if (authEventId !== eventId) return;
       if (error) throw error;
       const user = data.session?.user ?? null;
-      cloudUserId = user?.id ?? null;
-      saveManager.setCloudStore(user ? new CloudSaveStore(client, user.id) : null);
+      wireCloud(user);
       set({ ready: true, signedIn: !!user, user: user ? toUser(user) : null });
     } catch {
-      set({ ready: true, hydrationError: true });
+      if (authEventId === eventId) set({ ready: true, hydrationError: true });
     }
   },
 

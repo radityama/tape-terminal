@@ -198,17 +198,22 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
   initSession: async (seed = 'TAPE_1337', mode = 'career', startingBalance = 100000) => {
     if (get().sessionPhase === 'loading' || get().sessionPhase === 'ready') return;
     set({ sessionPhase: 'loading', sessionError: null, engine: null, engineId: null, snapshot: null });
+    let recoveryMessage = 'Could not safely restore or verify your saves. Your saved data has not been replaced. Retry, or return to the title screen to inspect your slots.';
     try {
       useAuthStore.getState().init();
       if (!useAuthStore.getState().ready) {
-        await new Promise<void>((resolve) => {
+        await new Promise<void>((resolve, reject) => {
+          const timeout = setTimeout(() => { unsubscribe(); reject(new Error('Authentication check timed out')); }, 10000);
           const unsubscribe = useAuthStore.subscribe((state) => {
-            if (state.ready) { unsubscribe(); resolve(); }
+            if (state.ready) { clearTimeout(timeout); unsubscribe(); resolve(); }
           });
-          if (useAuthStore.getState().ready) { unsubscribe(); resolve(); }
+          if (useAuthStore.getState().ready) { clearTimeout(timeout); unsubscribe(); resolve(); }
         });
       }
-      if (useAuthStore.getState().hydrationError) throw new Error('Could not check your account session. Retry to check cloud saves.');
+      if (useAuthStore.getState().hydrationError) {
+        recoveryMessage = 'Could not check your account session. Retry before loading or starting a game; cloud saves may still exist.';
+        throw new Error('Authentication check failed');
+      }
       const authUserId = useAuthStore.getState().user?.id ?? null;
       const authUnchanged = () => useAuthStore.getState().ready && (useAuthStore.getState().user?.id ?? null) === authUserId;
       const slots = await saveManager.listAllSlots();
@@ -216,13 +221,20 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
       const preferred = saveManager.getActiveSlot();
       const target = slots.find((entry) => entry.slot === preferred) ?? slots[0];
       if (target) {
-        if (target.health !== 'healthy') throw new Error('A local save needs recovery. Your original data is still stored.');
+        if (target.health !== 'healthy') {
+          recoveryMessage = target.health === 'unsupported_version'
+            ? 'This local save was made by a newer version of TAPE. Its original data is still stored.'
+            : 'This local save could not be read. Its original data is still stored.';
+          throw new Error('Local save needs recovery');
+        }
         const outcome = await saveManager.load(target.slot, authUnchanged);
-        if (!outcome.ok) throw new Error(outcome.reason === 'newer'
-          ? 'This save needs a newer version of TAPE.'
-          : outcome.reason === 'corrupt'
-            ? 'This save could not be read. Your original data is still stored.'
-            : 'The selected save could not be found. Retry to check your saves.');
+        if (!outcome.ok) {
+          recoveryMessage = outcome.reason === 'newer' ? 'This save needs a newer version of TAPE. Its original data is still stored.'
+            : outcome.reason === 'corrupt' ? 'This save could not be read. Its original data is still stored.'
+              : outcome.reason === 'conflict' ? 'This device and cloud have conflicting saves. Both copies are preserved. Return to the title screen to choose how to resolve them.'
+                : 'The selected save could not be found. Retry to check your saves.';
+          throw new Error('Save load failed');
+        }
         if (!get().engine) throw new Error('The save could not initialize the game.');
         set({ sessionPhase: 'ready', sessionError: null });
       } else {
@@ -231,7 +243,7 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
       }
     } catch {
       saveManager.endSession();
-      set({ engine: null, engineId: null, snapshot: null, pricesByTicker: {}, sessionPhase: 'recovery', sessionError: 'Could not safely restore or verify your saves. Your saved data has not been replaced. Retry, or return to the title screen to inspect your slots.' });
+      set({ engine: null, engineId: null, snapshot: null, pricesByTicker: {}, sessionPhase: 'recovery', sessionError: recoveryMessage });
     }
   },
 
