@@ -124,6 +124,7 @@ test('a corrupt slot cannot be overwritten by a ready session or force', async (
   saveManager.markSessionReady();
   const result = await saveManager.save(1, { force: true });
   expect(result).toMatchObject({ ok: false, reason: 'invalid' });
+  expect(await saveManager.save(1)).toMatchObject({ ok: false, reason: 'invalid' });
   expect((await db.savedGames.get('slot_1'))?.payload).toBe('{');
 });
 
@@ -135,8 +136,37 @@ test('replacement needs the reviewed revision and preserves the original raw row
   saveManager.markSessionReady();
   expect((await saveManager.replaceSlot(1, 2)).ok).toBe(false);
   expect((await saveManager.replaceSlot(1, 1)).ok).toBe(true);
+  expect((await new LocalSaveStore().get(1))?.revision).toBe(2);
   const backup = await db.backups.where('slot').equals(1).first();
   expect(backup?.payload).toContain('"seq":50');
+});
+
+test('replacement during an in-flight cloud push leaves the new career dirty and pushes it afterward', async () => {
+  let finishFirst: ((result: { ok: true; revision: number }) => void) | undefined;
+  const pushed: number[] = [];
+  saveManager.setCloudStore({
+    ...profileCloud().cloud,
+    getMeta: async () => null,
+    put: async (save: SaveGame) => {
+      pushed.push(save.seq);
+      if (pushed.length === 1) return new Promise((resolve) => { finishFirst = resolve; });
+      return { ok: true, revision: pushed.length };
+    },
+  } as never);
+  captured = captureFor(20, 2, 0, 'first-engine');
+  saveManager.bindSession(1, 'first-engine');
+  saveManager.markSessionReady();
+  expect((await saveManager.save(1)).ok).toBe(true);
+  const firstPush = saveManager.syncSlot(1);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  captured = captureFor(1, 1, 0, 'second-engine');
+  saveManager.bindSession(1, 'second-engine');
+  saveManager.markSessionReady();
+  expect(await saveManager.replaceSlot(1, 1)).toEqual({ ok: true, revision: 2 });
+  finishFirst?.({ ok: true, revision: 1 });
+  await firstPush;
+  expect(await saveManager.flushCloudPush()).toMatchObject({ status: 'synced' });
+  expect(pushed).toEqual([20, 1]);
 });
 
 test('cloud conflict resolution cannot replace a corrupt local row', async () => {

@@ -213,6 +213,15 @@ export class LocalSaveStore implements SaveStore {
     return db.transaction('rw', db.savedGames, db.autosaveHistory, async (): Promise<PutResult> => {
       const existing = await db.savedGames.get(slotId(save.slot));
       const existingRevision = existing?.revision ?? 0;
+      if (existing) {
+        try {
+          rowToSave(existing);
+        } catch {
+          return { ok: false, reason: 'invalid', message: 'This slot contains an unreadable or unsupported save. Use explicit replacement to preserve a backup.' };
+        }
+      } else if (opts?.expectedRevision !== undefined && opts.expectedRevision !== 0) {
+        return { ok: false, reason: 'conflict', remoteRevision: 0 };
+      }
       if (existing && (opts?.expectedRevision === undefined || existingRevision !== opts.expectedRevision)) {
         return { ok: false, reason: 'conflict', remoteRevision: existingRevision };
       }
@@ -256,17 +265,31 @@ export class LocalSaveStore implements SaveStore {
   }
 
   async replace(save: SaveGame, expectedRevision: number): Promise<PutResult> {
-    return db.transaction('rw', db.savedGames, db.backups, db.autosaveHistory, async () => {
+    return db.transaction('rw', db.savedGames, db.backups, async (): Promise<PutResult> => {
       const existing = await db.savedGames.get(slotId(save.slot));
-      if (!existing || existing.revision !== expectedRevision) {
-        return { ok: false, reason: 'conflict', remoteRevision: existing?.revision ?? 0 } as PutResult;
+      const existingRevision = existing?.revision ?? 0;
+      if (!existing || existingRevision !== expectedRevision) {
+        return { ok: false, reason: 'conflict', remoteRevision: existingRevision };
       }
+      let row: SaveRow & { payload: string };
+      try {
+        row = saveToRow(save, existingRevision + 1);
+      } catch (error) {
+        return { ok: false, reason: 'invalid', message: error instanceof Error ? error.message : 'invalid save' };
+      }
+      if (new TextEncoder().encode(row.payload).length > SAVE_SIZE_HARD_LIMIT) {
+        return { ok: false, reason: 'too_large' };
+      }
+
       const raw = existing.payload ?? JSON.stringify(existing);
       await db.backups.add({ slot: save.slot, savedAt: Date.now(), payload: raw });
-      await db.savedGames.delete(slotId(save.slot));
-      const result = await this.put(save);
-      if (!result.ok) throw new Error(`Replacement failed: ${result.reason}`);
-      return result;
+      const backups = await db.backups.where('slot').equals(save.slot).sortBy('savedAt');
+      while (backups.length > 3) {
+        const oldest = backups.shift();
+        if (oldest?.id != null) await db.backups.delete(oldest.id);
+      }
+      await db.savedGames.put(row);
+      return { ok: true, revision: existingRevision + 1 };
     });
   }
 

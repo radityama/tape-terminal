@@ -332,6 +332,7 @@ class SaveManagerImpl {
     const result = await this.store.replace({ ...save, game }, expectedRevision);
     if (result.ok) {
       this.dirty = true;
+      if (this.inFlight.has(slot)) this.dirtyWhilePushing = true;
       this.updateStatus();
       this.scheduleCloudPush(slot);
     }
@@ -541,6 +542,7 @@ class SaveManagerImpl {
 
     this.inFlight.add(slot);
     this.updateStatus();
+    let pushed = false;
     try {
       // Nothing unpushed: do not fire a pointless write.
       if (!this.dirty) return { status: 'noop' };
@@ -561,6 +563,7 @@ class SaveManagerImpl {
       const result = await this.cloud.put(local, expected !== undefined ? { expectedRevision: expected } : undefined);
 
       if (result.ok) {
+        pushed = true;
         this.baseRevision.set(slot, result.revision);
         this.retryDelay = RETRY_BASE_MS;
         this.lastPushOk = true;
@@ -588,6 +591,7 @@ class SaveManagerImpl {
       return { status: 'failed', message: err instanceof Error ? err.message : 'sync failed' };
     } finally {
       this.inFlight.delete(slot);
+      if (pushed && this.dirty && !this.cloudPaused) this.scheduleCloudPush(slot);
       this.updateStatus();
     }
   }
@@ -604,7 +608,12 @@ class SaveManagerImpl {
   // Conflict resolution: keep the local device's copy, overwriting the cloud at the given revision.
   async keepLocal(slot: number, remoteRevision: number): Promise<SyncOutcome> {
     if (!this.cloud) return { status: 'noop' };
-    const local = await this.store.get(slot);
+    let local: SaveGame | null;
+    try {
+      local = await this.store.get(slot);
+    } catch {
+      return { status: 'failed', message: 'Could not read the local save. The cloud copy was not changed.' };
+    }
     if (!local) return { status: 'noop' };
     const result = await this.cloud.put(local, { expectedRevision: remoteRevision });
     if (result.ok) {
