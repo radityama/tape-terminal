@@ -9,5 +9,7 @@ export function loadFailureMessage(outcome: Exclude<LoadOutcome, { ok: true }>):
       return 'This save needs a newer version of TAPE.';
     case 'corrupt':
       return 'This save is damaged and could not be loaded.';
+    case 'conflict':
+      return 'This device and cloud have conflicting saves. Both copies are preserved.';
   }
 }

@@ -63,6 +63,7 @@ export interface SaveManagerHooks {
 export type LoadOutcome =
   | { ok: true; save: SaveGame }
   | { ok: false; reason: 'missing' }
+  | { ok: false; reason: 'conflict' }
   | { ok: false; reason: 'newer'; error: SaveVersionError }
   | { ok: false; reason: 'corrupt'; error: SaveCorruptError };
 
@@ -191,7 +192,11 @@ class SaveManagerImpl {
       const remote = await this.cloud.getMeta(slot);
       if (!remote) return;
       const local = await this.baseSave(slot);
-      if (local && local.seq >= (remote.seq ?? 0)) {
+      const cloudSave = local ? await this.cloud.get(slot) : null;
+      if (local && cloudSave && local.seed === cloudSave.seed && local.createdAt === cloudSave.createdAt
+        && local.mode === cloudSave.mode && local.scenarioId === cloudSave.scenarioId
+        && local.deviceId === cloudSave.deviceId && local.seq >= cloudSave.seq
+        && (local.seq !== cloudSave.seq || JSON.stringify(local.game) === JSON.stringify(cloudSave.game))) {
         this.baseRevision.set(slot, remote.revision);
         this.updateStatus();
       }
@@ -239,7 +244,8 @@ class SaveManagerImpl {
     return this.store.list();
   }
 
-  // Merge local and cloud slot lists, newest wins, and label where each came from.
+  // This is an occupancy listing, not a source selection. Device clocks cannot decide
+  // which snapshot will be loaded; load() compares the complete saves instead.
   async listAllSlots(): Promise<MergedSlot[]> {
     const local = this.store instanceof LocalSaveStore
       ? await this.store.inspectSlots()
@@ -255,7 +261,6 @@ class SaveManagerImpl {
       if (existing) {
         existing.origin = 'both';
         existing.cloudUpdatedAt = meta.updatedAt;
-        if (existing.health === 'healthy' && meta.updatedAt > (existing.localUpdatedAt ?? 0)) existing.meta = meta;
       } else {
         merged.set(meta.slot, { slot: meta.slot, meta, health: 'healthy', origin: 'cloud', cloudUpdatedAt: meta.updatedAt });
       }
@@ -267,25 +272,30 @@ class SaveManagerImpl {
     try {
       // Drop repairs recorded by unrelated list or scan decodes before this load.
       consumeSaveRepairs();
-      if (this.cloud && this.baseRevision.get(slot) === undefined) {
-        // Prefer the cloud copy when the player has an account and picks a slot.
-        const cloudMeta = await this.cloud.getMeta(slot);
-        if (cloudMeta) {
-          const cloudSave = await this.cloud.get(slot);
-          if (cloudSave) {
-            if (!canApply()) throw new Error('Session changed while loading');
-            this.baseRevision.set(slot, cloudMeta.revision);
-            this.activeSlot = slot;
-            this.hooks?.restore(cloudSave);
-            this.notifyRepairs();
-            return { ok: true, save: cloudSave };
-          }
+      const cloud = this.cloud;
+      const local = await this.store.get(slot);
+      if (!canApply() || cloud !== this.cloud) throw new Error('Session changed while loading');
+      const cloudMeta = cloud ? await cloud.getMeta(slot) : null;
+      if (!canApply() || cloud !== this.cloud) throw new Error('Session changed while loading');
+      const remote = cloudMeta ? await cloud?.get(slot) : null;
+      if (!canApply() || cloud !== this.cloud) throw new Error('Session changed while loading');
+      if (cloudMeta && !remote) throw new Error('Cloud save changed while loading. Retry before starting a session.');
+
+      let save = local ?? remote;
+      if (local && remote) {
+        const sameCareer = local.seed === remote.seed && local.createdAt === remote.createdAt
+          && local.mode === remote.mode && local.scenarioId === remote.scenarioId;
+        if (!sameCareer || local.deviceId !== remote.deviceId) return { ok: false, reason: 'conflict' };
+        if (local.seq === remote.seq) {
+          if (JSON.stringify(local.game) !== JSON.stringify(remote.game)) return { ok: false, reason: 'conflict' };
+          save = local;
+        } else {
+          save = local.seq > remote.seq ? local : remote;
         }
       }
-
-      const save = await this.store.get(slot);
       if (!save) return { ok: false, reason: 'missing' };
       if (!canApply()) throw new Error('Session changed while loading');
+      if (cloudMeta) this.baseRevision.set(slot, cloudMeta.revision);
       this.activeSlot = slot;
       this.hooks?.restore(save);
       this.notifyRepairs();
@@ -332,6 +342,7 @@ class SaveManagerImpl {
     const result = await this.store.replace({ ...save, game }, expectedRevision);
     if (result.ok) {
       this.dirty = true;
+      if (this.inFlight.has(slot)) this.dirtyWhilePushing = true;
       this.updateStatus();
       this.scheduleCloudPush(slot);
     }
@@ -541,6 +552,7 @@ class SaveManagerImpl {
 
     this.inFlight.add(slot);
     this.updateStatus();
+    let pushed = false;
     try {
       // Nothing unpushed: do not fire a pointless write.
       if (!this.dirty) return { status: 'noop' };
@@ -561,6 +573,7 @@ class SaveManagerImpl {
       const result = await this.cloud.put(local, expected !== undefined ? { expectedRevision: expected } : undefined);
 
       if (result.ok) {
+        pushed = true;
         this.baseRevision.set(slot, result.revision);
         this.retryDelay = RETRY_BASE_MS;
         this.lastPushOk = true;
@@ -588,6 +601,7 @@ class SaveManagerImpl {
       return { status: 'failed', message: err instanceof Error ? err.message : 'sync failed' };
     } finally {
       this.inFlight.delete(slot);
+      if (pushed && this.dirty && !this.cloudPaused) this.scheduleCloudPush(slot);
       this.updateStatus();
     }
   }
@@ -604,7 +618,12 @@ class SaveManagerImpl {
   // Conflict resolution: keep the local device's copy, overwriting the cloud at the given revision.
   async keepLocal(slot: number, remoteRevision: number): Promise<SyncOutcome> {
     if (!this.cloud) return { status: 'noop' };
-    const local = await this.store.get(slot);
+    let local: SaveGame | null;
+    try {
+      local = await this.store.get(slot);
+    } catch {
+      return { status: 'failed', message: 'Could not read the local save. The cloud copy was not changed.' };
+    }
     if (!local) return { status: 'noop' };
     const result = await this.cloud.put(local, { expectedRevision: remoteRevision });
     if (result.ok) {

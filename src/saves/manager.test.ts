@@ -124,6 +124,7 @@ test('a corrupt slot cannot be overwritten by a ready session or force', async (
   saveManager.markSessionReady();
   const result = await saveManager.save(1, { force: true });
   expect(result).toMatchObject({ ok: false, reason: 'invalid' });
+  expect(await saveManager.save(1)).toMatchObject({ ok: false, reason: 'invalid' });
   expect((await db.savedGames.get('slot_1'))?.payload).toBe('{');
 });
 
@@ -135,8 +136,37 @@ test('replacement needs the reviewed revision and preserves the original raw row
   saveManager.markSessionReady();
   expect((await saveManager.replaceSlot(1, 2)).ok).toBe(false);
   expect((await saveManager.replaceSlot(1, 1)).ok).toBe(true);
+  expect((await new LocalSaveStore().get(1))?.revision).toBe(2);
   const backup = await db.backups.where('slot').equals(1).first();
   expect(backup?.payload).toContain('"seq":50');
+});
+
+test('replacement during an in-flight cloud push leaves the new career dirty and pushes it afterward', async () => {
+  let finishFirst: ((result: { ok: true; revision: number }) => void) | undefined;
+  const pushed: number[] = [];
+  saveManager.setCloudStore({
+    ...profileCloud().cloud,
+    getMeta: async () => null,
+    put: async (save: SaveGame) => {
+      pushed.push(save.seq);
+      if (pushed.length === 1) return new Promise((resolve) => { finishFirst = resolve; });
+      return { ok: true, revision: pushed.length };
+    },
+  } as never);
+  captured = captureFor(20, 2, 0, 'first-engine');
+  saveManager.bindSession(1, 'first-engine');
+  saveManager.markSessionReady();
+  expect((await saveManager.save(1)).ok).toBe(true);
+  const firstPush = saveManager.syncSlot(1);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  captured = captureFor(1, 1, 0, 'second-engine');
+  saveManager.bindSession(1, 'second-engine');
+  saveManager.markSessionReady();
+  expect(await saveManager.replaceSlot(1, 1)).toEqual({ ok: true, revision: 2 });
+  finishFirst?.({ ok: true, revision: 1 });
+  await firstPush;
+  expect(await saveManager.flushCloudPush()).toMatchObject({ status: 'synced' });
+  expect(pushed).toEqual([20, 1]);
 });
 
 test('cloud conflict resolution cannot replace a corrupt local row', async () => {
@@ -530,12 +560,53 @@ test('a reload right after a fill restores the trade from local storage', async 
   assert.equal(restored[0].game.portfolio.positions.length, 1, 'the filled position survives a reload');
 });
 
+test.each([
+  { localSeq: 9, cloudSeq: 4, selected: 9 },
+  { localSeq: 4, cloudSeq: 9, selected: 9 },
+])('loading chooses the newer compatible progress, local $localSeq and cloud $cloudSeq', async ({ localSeq, cloudSeq, selected }) => {
+  await new LocalSaveStore().put(saveGame(1, localSeq, 1, 0));
+  const remote = saveGame(1, cloudSeq, 1, 0);
+  saveManager.setCloudStore({
+    ...profileCloud().cloud,
+    getMeta: async () => ({ slot: 1, name: remote.name, seed: remote.seed, mode: remote.mode, rank: null, equity: 100000, simDay: 1, updatedAt: 999, revision: 8, seq: cloudSeq, deviceId: remote.deviceId }),
+    get: async () => remote,
+  } as never);
+  const outcome = await saveManager.load(1);
+  expect(outcome.ok).toBe(true);
+  expect(restored.at(-1)?.seq).toBe(selected);
+});
+
+test('equal progress with different content enters conflict without restoring either copy', async () => {
+  await new LocalSaveStore().put(saveGame(1, 9, 1, 0));
+  const remote = saveGame(1, 9, 1, 1);
+  saveManager.setCloudStore({
+    ...profileCloud().cloud,
+    getMeta: async () => ({ slot: 1, name: remote.name, seed: remote.seed, mode: remote.mode, rank: null, equity: 100000, simDay: 1, updatedAt: 999, revision: 8, seq: 9, deviceId: remote.deviceId }),
+    get: async () => remote,
+  } as never);
+  expect(await saveManager.load(1)).toEqual({ ok: false, reason: 'conflict' });
+  expect(restored).toEqual([]);
+  expect((await new LocalSaveStore().get(1))?.game.portfolio.positions).toHaveLength(0);
+});
+
+test('account change during cloud loading prevents restoration', async () => {
+  const remote = saveGame(1, 9, 1, 0);
+  let current = true;
+  saveManager.setCloudStore({
+    ...profileCloud().cloud,
+    getMeta: async () => ({ slot: 1, name: remote.name, seed: remote.seed, mode: remote.mode, rank: null, equity: 100000, simDay: 1, updatedAt: 1, revision: 1, seq: 9, deviceId: remote.deviceId }),
+    get: async () => { current = false; return remote; },
+  } as never);
+  await expect(saveManager.load(1, () => current)).rejects.toThrow('Session changed');
+  expect(restored).toEqual([]);
+});
+
 test('signing in after a restore adopts the cloud revision so the next push is not a false conflict', async () => {
   await new LocalSaveStore().put(saveGame(1, 10, 2, 1), { expectedRevision: undefined });
   const putOpts: Array<{ expectedRevision?: number } | undefined> = [];
   const cloud = {
     list: async () => [],
-    get: async () => null,
+    get: async () => saveGame(1, 8, 2, 1),
     getMeta: async () => ({
       slot: 1,
       name: 'Career',
@@ -547,7 +618,7 @@ test('signing in after a restore adopts the cloud revision so the next push is n
       updatedAt: 1700000000000,
       revision: 5,
       seq: 8,
-      deviceId: 'other',
+      deviceId: 'device-test',
     }),
     put: async (_save: SaveGame, opts?: { expectedRevision?: number }) => {
       putOpts.push(opts);
