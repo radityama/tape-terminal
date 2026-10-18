@@ -5,6 +5,7 @@ import { OrderSide, OrderType, TimeInForce } from '../engine/matching';
 import { Scenario, SCENARIOS } from '../data/scenarios';
 import { saveManager, SaveStatus } from '../saves/manager';
 import { Profile, SaveGame } from '../saves/schema';
+import { useAuthStore } from './useAuthStore';
 
 export type BottomTab = 'positions' | 'orders' | 'blotter' | 'risk' | 'calendar' | 'leaderboard';
 export type WorkspaceLayout = 'trade' | 'research' | 'risk';
@@ -86,7 +87,8 @@ export interface TerminalState {
   // Identifies the live engine instance for the capture hydration gate.
   engineId: string | null;
   // Hydration gate phases for a session (loading gate for autosave).
-  sessionPhase: 'idle' | 'loading' | 'ready';
+  sessionPhase: 'idle' | 'loading' | 'ready' | 'recovery';
+  sessionError: string | null;
 
   // Actions
   initEngine: (seed?: string, mode?: 'career' | 'sandbox', startingBalance?: number) => void;
@@ -181,35 +183,56 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
   saveStatus: 'saved_locally',
   engineId: null,
   sessionPhase: 'idle',
+  sessionError: null,
 
   initEngine: (seed = 'TAPE_1337', mode = 'career', startingBalance = 100000) => {
     const engine = new MarketSimulationEngine(seed, startingBalance);
     wireEngine(engine, get);
     const initialSnap = engine.getSnapshot();
     const engineId = newEngineId();
-    set({ engine, engineId, seed, mode, snapshot: initialSnap, pricesByTicker: buildPriceMap(initialSnap) });
+    set({ engine, engineId, seed, mode, snapshot: initialSnap, pricesByTicker: buildPriceMap(initialSnap), sessionPhase: 'ready', sessionError: null });
     saveManager.bindSession(saveManager.getActiveSlot(), engineId);
     saveManager.markSessionReady();
   },
 
   initSession: async (seed = 'TAPE_1337', mode = 'career', startingBalance = 100000) => {
-    if (get().engine) return;
-    useTerminalStore.setState({ sessionPhase: 'loading' });
-    // Prefer the stored local copy so a reload continues exactly where the player left off.
-    const slot = saveManager.getActiveSlot();
-    let restoredAtLeastOne = false;
+    if (get().sessionPhase === 'loading' || get().sessionPhase === 'ready') return;
+    set({ sessionPhase: 'loading', sessionError: null, engine: null, engineId: null, snapshot: null });
     try {
-      const local = await saveManager.listSlots();
-      restoredAtLeastOne = local.some((meta) => meta.slot === slot);
+      useAuthStore.getState().init();
+      if (!useAuthStore.getState().ready) {
+        await new Promise<void>((resolve) => {
+          const unsubscribe = useAuthStore.subscribe((state) => {
+            if (state.ready) { unsubscribe(); resolve(); }
+          });
+          if (useAuthStore.getState().ready) { unsubscribe(); resolve(); }
+        });
+      }
+      if (useAuthStore.getState().hydrationError) throw new Error('Could not check your account session. Retry to check cloud saves.');
+      const authUserId = useAuthStore.getState().user?.id ?? null;
+      const authUnchanged = () => useAuthStore.getState().ready && (useAuthStore.getState().user?.id ?? null) === authUserId;
+      const slots = await saveManager.listAllSlots();
+      if (!authUnchanged()) throw new Error('Account changed while checking saves.');
+      const preferred = saveManager.getActiveSlot();
+      const target = slots.find((entry) => entry.slot === preferred) ?? slots[0];
+      if (target) {
+        if (target.health !== 'healthy') throw new Error('A local save needs recovery. Your original data is still stored.');
+        const outcome = await saveManager.load(target.slot, authUnchanged);
+        if (!outcome.ok) throw new Error(outcome.reason === 'newer'
+          ? 'This save needs a newer version of TAPE.'
+          : outcome.reason === 'corrupt'
+            ? 'This save could not be read. Your original data is still stored.'
+            : 'The selected save could not be found. Retry to check your saves.');
+        if (!get().engine) throw new Error('The save could not initialize the game.');
+        set({ sessionPhase: 'ready', sessionError: null });
+      } else {
+        if (!authUnchanged()) throw new Error('Account changed while checking saves.');
+        get().initEngine(seed, mode, startingBalance);
+      }
     } catch {
-      restoredAtLeastOne = false;
+      saveManager.endSession();
+      set({ engine: null, engineId: null, snapshot: null, pricesByTicker: {}, sessionPhase: 'recovery', sessionError: 'Could not safely restore or verify your saves. Your saved data has not been replaced. Retry, or return to the title screen to inspect your slots.' });
     }
-    if (restoredAtLeastOne) {
-      await saveManager.load(slot); // restores through hooks, which bind a fresh engine session
-    } else {
-      get().initEngine(seed, mode, startingBalance);
-    }
-    useTerminalStore.setState({ sessionPhase: 'ready' });
   },
 
   restoreFromSave: (save) => {
@@ -228,6 +251,8 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
       activeModal: 'none',
       snapshot,
       pricesByTicker: buildPriceMap(snapshot),
+      sessionPhase: 'ready',
+      sessionError: null,
     });
     saveManager.bindSession(save.slot, engineId);
     saveManager.markSessionReady();

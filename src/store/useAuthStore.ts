@@ -15,6 +15,7 @@ export interface AuthUser {
 interface AuthState {
   configured: boolean;
   ready: boolean;
+  hydrationError: boolean;
   signedIn: boolean;
   user: AuthUser | null;
   loading: boolean;
@@ -25,6 +26,7 @@ interface AuthState {
   conflict: SyncConflict | null;
 
   init: () => void;
+  retryHydration: () => Promise<void>;
   openDialog: (dialog: AuthDialog) => void;
   closeDialog: () => void;
   clearError: () => void;
@@ -43,6 +45,7 @@ let initStarted = false;
 // Supabase emits INITIAL_SESSION right after getSession, so this guards against wiring twice
 // and throwing away the sync state (base revisions, status) of the first wire-up.
 let cloudUserId: string | null = null;
+let authEventId = 0;
 
 function toUser(user: User): AuthUser {
   const providers = Array.isArray(user.app_metadata?.providers)
@@ -54,6 +57,7 @@ function toUser(user: User): AuthUser {
 export const useAuthStore = create<AuthState>((set, get) => ({
   configured: false,
   ready: false,
+  hydrationError: false,
   signedIn: false,
   user: null,
   loading: false,
@@ -91,17 +95,42 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       }
     };
 
-    void client.auth.getSession().then(({ data }) => {
+    const initialEventId = authEventId;
+    void client.auth.getSession().then(({ data, error }) => {
+      if (authEventId !== initialEventId) return;
+      if (error) {
+        set({ ready: true, hydrationError: true });
+        return;
+      }
       const user = data.session?.user ?? null;
-      set({ ready: true, signedIn: !!user, user: user ? toUser(user) : null });
       wireCloud(user);
-    });
+      set({ ready: true, hydrationError: false, signedIn: !!user, user: user ? toUser(user) : null });
+    }).catch(() => set({ ready: true, hydrationError: true }));
 
-    client.auth.onAuthStateChange((_event, session) => {
+    client.auth.onAuthStateChange((event, session) => {
+      if (event === 'INITIAL_SESSION') return;
+      authEventId += 1;
       const user = session?.user ?? null;
-      set({ signedIn: !!user, user: user ? toUser(user) : null, error: null, emailSentTo: user ? null : get().emailSentTo });
       wireCloud(user);
+      set({ ready: true, hydrationError: false, signedIn: !!user, user: user ? toUser(user) : null, error: null, emailSentTo: user ? null : get().emailSentTo });
     });
+  },
+
+  retryHydration: async () => {
+    if (!client) return;
+    set({ ready: false, hydrationError: false });
+    const eventId = authEventId;
+    try {
+      const { data, error } = await client.auth.getSession();
+      if (authEventId !== eventId) return;
+      if (error) throw error;
+      const user = data.session?.user ?? null;
+      cloudUserId = user?.id ?? null;
+      saveManager.setCloudStore(user ? new CloudSaveStore(client, user.id) : null);
+      set({ ready: true, signedIn: !!user, user: user ? toUser(user) : null });
+    } catch {
+      set({ ready: true, hydrationError: true });
+    }
   },
 
   openDialog: (dialog) => set({ dialog, error: null }),

@@ -34,6 +34,7 @@ export class CloudSaveStore implements SaveStore {
     const { data, error } = await this.client
       .from('saves')
       .select('slot,name,seed,mode,rank,equity,sim_day,updated_at,revision,device_id')
+      .eq('user_id', this.userId)
       .order('updated_at', { ascending: false });
     if (error) throw new Error(error.message);
 
@@ -52,7 +53,7 @@ export class CloudSaveStore implements SaveStore {
   }
 
   async get(slot: number): Promise<SaveGame | null> {
-    const { data, error } = await this.client.from('saves').select('payload').eq('slot', slot).maybeSingle();
+    const { data, error } = await this.client.from('saves').select('payload').eq('user_id', this.userId).eq('slot', slot).maybeSingle();
     if (error) throw new Error(error.message);
     if (!data) return null;
 
@@ -146,9 +147,11 @@ export class CloudSaveStore implements SaveStore {
     const { data, error } = await this.client
       .from('saves')
       .select('slot,name,seed,mode,rank,equity,sim_day,updated_at,revision,seq,device_id')
+      .eq('user_id', this.userId)
       .eq('slot', slot)
       .maybeSingle();
-    if (error || !data) return null;
+    if (error) throw new Error('Could not inspect the cloud save.');
+    if (!data) return null;
     const row = data as SaveListRow;
     return {
       slot: row.slot,
