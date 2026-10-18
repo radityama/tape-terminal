@@ -12,6 +12,10 @@ export interface AuthUser {
   providers: string[];
 }
 
+export type CloudDeletionResult =
+  | { status: 'success'; deletedSlots: number[] }
+  | { status: 'failed' | 'partial'; deletedSlots: number[]; failedSlots: number[]; message: string };
+
 interface AuthState {
   configured: boolean;
   ready: boolean;
@@ -35,7 +39,7 @@ interface AuthState {
   resendMagicLink: () => Promise<void>;
   signInWithOAuth: (provider: 'github' | 'google') => Promise<void>;
   signOut: (opts?: { removeCloudSaves?: boolean }) => Promise<void>;
-  deleteCloudSaves: () => Promise<void>;
+  deleteCloudSaves: () => Promise<CloudDeletionResult>;
 }
 
 const MAGIC_LINK_COOLDOWN_MS = 30000;
@@ -176,21 +180,57 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   signOut: async (opts) => {
     if (!client) return;
-    set({ loading: true });
-    if (opts?.removeCloudSaves && get().user) {
-      await get().deleteCloudSaves();
+    set({ loading: true, error: null });
+    try {
+      if (opts?.removeCloudSaves) {
+        const result = await get().deleteCloudSaves();
+        if (result.status !== 'success') {
+          set({ error: `${result.message} You are still signed in; retry deletion or sign out without it.` });
+          return;
+        }
+      }
+      const { error } = await client.auth.signOut();
+      if (error) throw error;
+      set({ signedIn: false, user: null, emailSentTo: null, dialog: 'none' });
+    } catch {
+      set({ error: 'Could not sign out. Please retry.' });
+    } finally {
+      set({ loading: false });
     }
-    await client.auth.signOut();
-    set({ loading: false, signedIn: false, user: null, emailSentTo: null });
   },
 
   deleteCloudSaves: async () => {
     const user = get().user;
-    if (!client || !user) return;
+    const failure = (deletedSlots: number[], failedSlots: number[], message: string): CloudDeletionResult => ({
+      status: deletedSlots.length ? 'partial' : 'failed', deletedSlots, failedSlots, message,
+    });
+    if (!client || !user) return failure([], [], 'Sign in before deleting cloud saves.');
     const store = new CloudSaveStore(client, user.id);
-    for (const slot of [1, 2, 3]) {
-      await store.delete(slot).catch(() => undefined);
+    try {
+      await saveManager.pauseCloudWrites();
+    } catch {
+      return failure([], [], 'A cloud save is still syncing. Retry deletion in a moment.');
     }
+    let slots: number[];
+    try {
+      slots = (await store.list()).map((save) => save.slot);
+    } catch {
+      saveManager.resumeCloudWrites();
+      return failure([], [], 'Could not check cloud saves. No deletion was confirmed.');
+    }
+    const deletedSlots: number[] = [];
+    const failedSlots: number[] = [];
+    for (const slot of slots) {
+      try {
+        await store.delete(slot);
+        deletedSlots.push(slot);
+      } catch {
+        failedSlots.push(slot);
+      }
+    }
+    if (failedSlots.length) return failure(deletedSlots, failedSlots, `Could not delete cloud save ${failedSlots.join(', ')}. Other completed deletions cannot be undone. Cloud sync is paused until you retry or sign out.`);
+    saveManager.setCloudStore(null);
+    return { status: 'success', deletedSlots };
   },
 }));
 

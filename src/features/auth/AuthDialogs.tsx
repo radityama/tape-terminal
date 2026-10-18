@@ -118,11 +118,13 @@ function AccountDialog() {
   const signOut = useAuthStore((s) => s.signOut);
   const deleteCloudSaves = useAuthStore((s) => s.deleteCloudSaves);
   const loading = useAuthStore((s) => s.loading);
+  const authError = useAuthStore((s) => s.error);
 
   const [removeOnSignOut, setRemoveOnSignOut] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [cloudCount, setCloudCount] = useState<number | null>(null);
   const [listError, setListError] = useState(false);
+  const [deletionError, setDeletionError] = useState<string | null>(null);
 
   useEffect(() => {
     void saveManager.listAllSlots()
@@ -137,9 +139,10 @@ function AccountDialog() {
         confirmLabel={`Delete ${cloudCount} cloud ${cloudCount === 1 ? 'save' : 'saves'}`}
         onCancel={() => setConfirmDelete(false)}
         onConfirm={() => {
-          void deleteCloudSaves().then(() => {
+          void deleteCloudSaves().then((result) => {
             setConfirmDelete(false);
-            closeDialog();
+            if (result.status === 'success') closeDialog();
+            else setDeletionError(result.message);
           });
         }}
         busy={loading}
@@ -175,12 +178,13 @@ function AccountDialog() {
             onChange={(e) => setRemoveOnSignOut(e.target.checked)}
             className="mt-0.5 accent-[var(--accent)]"
           />
-          <span>Also remove cloud synced saves from this device after signing out</span>
+          <span>Delete my cloud saves before signing out</span>
         </label>
 
         <button className={secondaryBtn} disabled={loading} onClick={() => void signOut({ removeCloudSaves: removeOnSignOut })}>
           Sign out
         </button>
+        {(authError || deletionError) && <p role="alert" className="text-[11px] text-[var(--down)]">{authError ?? deletionError}</p>}
 
         <div className="pt-2 border-t border-[var(--line)] space-y-2">
           {listError ? (
@@ -351,16 +355,21 @@ function ConflictDialog() {
     setBusy(true);
     try {
       if (action === 'keep') {
-        await saveManager.keepLocal(conflict.slot, conflict.remoteRevision);
-        closeDialog();
+        const result = await saveManager.keepLocal(conflict.slot, conflict.remoteRevision);
+        if (result.status === 'synced') closeDialog();
+        else setMessage('Could not keep this device copy. Try again.');
       } else if (action === 'use') {
-        await saveManager.useCloud(conflict.slot);
-        closeDialog();
+        const result = await saveManager.useCloud(conflict.slot);
+        if (result.status === 'synced') closeDialog();
+        else setMessage('Could not safely load the cloud copy. Try again.');
       } else {
         const result = await saveManager.keepBoth(conflict.slot);
         if (result.status === 'full') setMessage('No free slot to keep both. Free a slot and try again.');
+        else if (result.status === 'failed') setMessage('Could not safely keep both copies. Check your saves and retry.');
         else closeDialog();
       }
+    } catch {
+      setMessage('Could not verify the saves. Retry when storage is available.');
     } finally {
       setBusy(false);
     }

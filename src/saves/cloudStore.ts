@@ -140,7 +140,9 @@ export class CloudSaveStore implements SaveStore {
   }
 
   async delete(slot: number): Promise<void> {
-    await this.client.from('saves').delete().eq('slot', slot);
+    const { error } = await this.client.from('saves').delete().eq('user_id', this.userId).eq('slot', slot).select('slot');
+    if (error) throw new Error('Cloud save deletion failed. Please retry.');
+    if (await this.getMeta(slot)) throw new Error('Cloud save still exists. Please retry.');
   }
 
   async getMeta(slot: number): Promise<SaveMeta | null> {

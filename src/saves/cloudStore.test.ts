@@ -62,3 +62,25 @@ test('zero rows updated with a missing cloud row does not resurrect a deleted sl
   expect(result).toEqual({ ok: false, reason: 'conflict', remoteRevision: 0 });
   expect(actions).toEqual(['update', 'select']);
 });
+
+test('cloud deletion checks returned errors, verifies absence and restricts ownership', async () => {
+  const filters: Array<[string, unknown]> = [];
+  let deletion: { error: { message: string } | null } = { error: null };
+  let remaining: unknown = null;
+  const query = {
+    eq(key: string, value: unknown) { filters.push([key, value]); return query; },
+    select() { return query; },
+    then(resolve: (value: typeof deletion) => void) { resolve(deletion); },
+    maybeSingle: async () => ({ data: remaining, error: null }),
+  };
+  const client = { from: () => ({ delete: () => query, select: () => query }) } as unknown as SupabaseClient;
+  const store = new CloudSaveStore(client, 'owner-a');
+  await store.delete(2);
+  expect(filters).toContainEqual(['user_id', 'owner-a']);
+  expect(filters).toContainEqual(['slot', 2]);
+  deletion = { error: { message: 'provider details' } };
+  await expect(store.delete(2)).rejects.toThrow('Cloud save deletion failed');
+  deletion = { error: null };
+  remaining = { slot: 2 };
+  await expect(store.delete(2)).rejects.toThrow('Cloud save still exists');
+});

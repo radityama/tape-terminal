@@ -6,7 +6,8 @@ Run a documentation pass whenever you finish a feature or find a gap while worki
 
 ## Now
 
-- Cloud saves and accounts (this branch): versioned save format, storage interface, Supabase auth, cross-device sync.
+- Phase 0 save integrity fixes are implemented on the review branches. Merge and browser validation remain before calling the phase complete.
+- Cloud saves and accounts: versioned save format, storage interface, Supabase auth, cross-device sync.
 - Profile blob persistence (settings, tutorial progress) via the save layer.
 
 ## Next
@@ -48,8 +49,10 @@ Run a documentation pass whenever you finish a feature or find a gap while worki
 | E2E-RELOAD | The autosave, seq guard, history restore and profile push flows are covered by unit tests, not by a scripted browser run. | The flows were replayed manually on the final production build (guest trade survives autosave and reload, day 122 at 20x saves on 3 seeds, title magic link signs in through `/auth/callback`, `public.profiles` receives a row). A scripted run still needs a seeded IndexedDB plus a live local Supabase stack. | Before public launch, after any change to autosave, sync or the auth callback, or when browser E2E tooling lands. | Open |
 | AUTH-CALLBACK | The `/auth/callback` route has no automated test. It was verified manually against the local Supabase stack only. | Exercising PKCE end to end needs a live auth issuer, and mocking the exchange would test the mock rather than the route. | Add it to the browser E2E suite before public launch. | Open |
 | DIALOG-E2E | Destructive dialog focus and cancellation were checked manually in the browser. The rollback path when IndexedDB refuses a new-career or seed replacement has no automated UI test. | Slot choice is unit-tested, but simulating a failed browser write needs an interactive test harness. | Add a write-failure and keyboard dialog case when browser E2E tooling lands, or if a replacement save failure is reported. | Open |
-| LOAD-UI | Load failures surface inline with a Retry action: a failed slot listing offers a global Retry, a failed resume offers a per-slot Retry, and a failed history restore offers a Retry that reopens confirmation. Full damaged-save recovery is not built: there is no export raw save and no start new career from the damaged slot. | Reading a damaged save returns a fixed message and exposes no raw bytes for export, so the recovery dialog needs more save-layer work. | Before public launch, or on a reported unreadable save. | Open |
-| CLAIM-META | `uploadSlot` treats a failed cloud metadata read as no cloud save, so a claim upload may replace an unreadable remote slot. | Task 1 only guards the initial slot listing; upload error handling needs its own test and change. | Before enabling claim uploads for public accounts, or on a reported cloud metadata read failure. | Open |
+| LOAD-UI | Damaged local rows remain visible and their original bytes can be exported on the title screen. A guided restore from raw JSON and a local history browser are not built. | Raw export and existing autosave history cover immediate preservation; guided repair needs a separate UX design. | When a player reports an unreadable save that cannot be restored from autosave history, or before public launch. | Open |
+| CLAIM-META | Claim upload now stops when cloud metadata cannot be read; it cannot assume the slot is empty. | `getMeta` propagates inspection errors and `uploadSlot` no longer converts them to null. | Revisit if a live backend reveals a metadata error mode not covered by unit tests. | Resolved |
+| PHASE0-BROWSER | Automated browser coverage of direct terminal navigation, corrupted IndexedDB, delayed auth restoration, and deletion dialogs is not present. | Unit tests cover the state and save layers; browser tests need a seeded IndexedDB and a local Supabase stack. | Before merging Phase 0 or public launch, run the scenarios against the production build and add browser automation when the test stack is available. | Open |
+| SAVE-AS | Settings manual Save to another slot now refuses a session bound to a different slot. | Copying a live career needs an explicit destination review and backup behavior to avoid replacing a different career. | When players request Save As or multi-slot duplication. | Open |
 
 ## Decisions log
 
