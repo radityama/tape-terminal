@@ -67,6 +67,114 @@ test('Orderbook slippage walks 5-level depth ladder accurately', () => {
   assert.ok(largeFill.averagePrice >= depth.bestAsk, 'Large buy average price must be at or above best ask');
 });
 
+test('a negative market order cannot mint cash or enter the trade history', () => {
+  const engine = new MarketSimulationEngine('G0_NEGATIVE', 10000);
+  const before = engine.exportState();
+
+  const result = engine.placeOrder({ ticker: 'HLVG', side: 'buy', type: 'market', quantity: -10 });
+
+  assert.equal(result.success, false);
+  assert.deepEqual(engine.exportState(), before);
+});
+
+test('all order types reject invalid quantity and price inputs before changing the engine', () => {
+  const base = { ticker: 'HLVG', side: 'buy' as const, type: 'market' as const, quantity: 1 };
+  const invalid = [
+    { quantity: 0 }, { quantity: -1 }, { quantity: 1.5 }, { quantity: NaN },
+    { quantity: Infinity }, { quantity: Number.MAX_SAFE_INTEGER + 1 },
+    { type: 'limit' as const }, { type: 'limit' as const, limitPrice: 0 },
+    { type: 'limit' as const, limitPrice: Infinity }, { type: 'limit' as const, limitPrice: NaN },
+    { type: 'limit' as const, limitPrice: 1e-12 },
+    { type: 'limit' as const, limitPrice: 1e-8 },
+    { type: 'stop' as const }, { type: 'stop' as const, stopPrice: -1 },
+    { type: 'stop_limit' as const, stopPrice: 100 },
+    { type: 'stop_limit' as const, limitPrice: 100 },
+    { type: 'trailing_stop' as const }, { type: 'trailing_stop' as const, trailingAmount: 0 },
+    { type: 'market' as const, takeProfitPrice: -1 },
+    { type: 'market' as const, stopLossPrice: NaN },
+    { type: 'market' as const, limitPrice: Infinity },
+    { type: 'limit' as const, quantity: 100, limitPrice: 1e14 },
+  ];
+
+  for (const change of invalid) {
+    const engine = new MarketSimulationEngine('G0_INVALID_INPUT', 10000);
+    const before = engine.exportState();
+    const result = engine.placeOrder({ ...base, ...change });
+    assert.equal(result.success, false, JSON.stringify(change));
+    assert.ok(result.error, JSON.stringify(change));
+    assert.deepEqual(engine.exportState(), before, JSON.stringify(change));
+  }
+});
+
+test('valid market and pending orders still execute and keep their quantities', () => {
+  const engine = new MarketSimulationEngine('G0_VALID', 100000);
+  const fill = engine.placeOrder({ ticker: 'HLVG', side: 'buy', type: 'market', quantity: 10 });
+  assert.equal(fill.success, true);
+  assert.equal(engine.getSnapshot().positions.find((p) => p.ticker === 'HLVG')?.shares, 10);
+  assert.equal(engine.getSnapshot().recentTrades[0]?.shares, 10);
+
+  const types = [
+    { type: 'limit' as const, limitPrice: 1 },
+    { type: 'stop' as const, stopPrice: 100000 },
+    { type: 'stop_limit' as const, stopPrice: 100000, limitPrice: 1 },
+    { type: 'trailing_stop' as const, trailingAmount: 1 },
+  ];
+  for (const order of types) {
+    const result = engine.placeOrder({ ticker: 'HLVG', side: 'buy', quantity: 2, ...order });
+    assert.equal(result.success, true, order.type);
+    assert.equal(engine.getSnapshot().openOrders.find((o) => o.id === result.orderId)?.quantity, 2);
+  }
+
+  const pending = engine.placeOrder({ ticker: 'VCRX', side: 'buy', type: 'limit', quantity: 3, limitPrice: 1000 });
+  assert.equal(pending.success, true);
+  engine.tick(0.05);
+  assert.equal(engine.getSnapshot().openOrders.some((o) => o.id === pending.orderId), false);
+  assert.equal(engine.getSnapshot().positions.find((p) => p.ticker === 'VCRX')?.shares, 3);
+});
+
+test('a restored partially filled order executes only its remaining shares', () => {
+  const engine = new MarketSimulationEngine('G0_PARTIAL', 1000000);
+  assert.equal(engine.placeOrder({ ticker: 'VCRX', side: 'buy', type: 'market', quantity: 997 }).success, true);
+  const placed = engine.placeOrder({ ticker: 'VCRX', side: 'buy', type: 'limit', quantity: 1000, limitPrice: 1000, takeProfitPrice: 3000, stopLossPrice: 1 });
+  assert.equal(placed.success, true);
+  const saved = engine.exportState();
+  const pending = saved.openOrders.find((order) => order.id === placed.orderId)!;
+  pending.status = 'partially_filled';
+  pending.filledQuantity = 997;
+  pending.commissionPaid = 1.5;
+  const restored = new MarketSimulationEngine(saved.seed, 1000000);
+  restored.importState(saved);
+  const before = restored.exportState();
+
+  restored.tick(0.05);
+
+  const after = restored.getSnapshot();
+  assert.equal(after.openOrders.some((order) => order.id === placed.orderId), false);
+  assert.equal(after.recentTrades[0].shares, 3);
+  assert.equal(after.recentTrades[0].commission, 1.5);
+  assert.equal(after.positions.find((position) => position.ticker === 'VCRX')?.shares, 1000);
+  assert.equal(before.portfolio.positions.find((position) => position.ticker === 'VCRX')?.shares, 997);
+  assert.deepEqual(after.openOrders.filter((order) => order.ticker === 'VCRX').map((order) => [order.type, order.quantity]), [['limit', 1000], ['stop', 1000]]);
+});
+
+test('a partial sell closes only its remaining long shares', () => {
+  const engine = new MarketSimulationEngine('G0_PARTIAL_SELL', 100000);
+  assert.equal(engine.placeOrder({ ticker: 'VCRX', side: 'buy', type: 'market', quantity: 3 }).success, true);
+  const placed = engine.placeOrder({ ticker: 'VCRX', side: 'sell', type: 'limit', quantity: 1000, limitPrice: 1 });
+  assert.equal(placed.success, true);
+  const saved = engine.exportState();
+  const pending = saved.openOrders.find((order) => order.id === placed.orderId)!;
+  pending.status = 'partially_filled';
+  pending.filledQuantity = 997;
+  const restored = new MarketSimulationEngine(saved.seed, 100000);
+  restored.importState(saved);
+
+  restored.tick(0.05);
+
+  assert.equal(restored.getSnapshot().recentTrades[0].shares, 3);
+  assert.equal(restored.getSnapshot().positions.find((position) => position.ticker === 'VCRX'), undefined);
+});
+
 test('Portfolio long execution, mark to market, and PnL calculation', () => {
   const portfolio = new PortfolioEngine(100000, false, false);
 
@@ -108,6 +216,33 @@ test('Portfolio long execution, mark to market, and PnL calculation', () => {
   assert.ok(sellFill.success);
   assert.equal(sellFill.tradeRecord?.realizedPnl, 250.0);
   assert.equal(portfolio.getPosition('HLVG')?.shares, 50);
+});
+
+test('portfolio rejects invalid internal fills without changing cash, positions or history', () => {
+  const valid = { orderId: 'bad_fill', ticker: 'HLVG', side: 'buy' as const, shares: 10, price: 100, commission: 1.5, slippageDollars: 0, timestamp: 1000 };
+  const invalid = [
+    { shares: -10 }, { shares: 0 }, { shares: 1.5 }, { shares: NaN },
+    { shares: Infinity }, { shares: Number.MAX_SAFE_INTEGER + 1 },
+    { price: -1 }, { price: 0 }, { price: NaN }, { price: Infinity },
+    { price: 1e-12 },
+    { shares: 1, price: 1e-8 },
+    { shares: 10, price: 1e14 }, { commission: NaN }, { slippageDollars: -1 },
+    { initialStopPrice: Infinity },
+  ];
+
+  for (const change of invalid) {
+    const portfolio = new PortfolioEngine(10000);
+    const before = portfolio.exportState();
+    const result = portfolio.executeFill({ ...valid, ...change });
+    assert.equal(result.success, false, JSON.stringify(change));
+    assert.deepEqual(portfolio.exportState(), before, JSON.stringify(change));
+  }
+
+  const portfolio = new PortfolioEngine(10000);
+  assert.equal(portfolio.executeFill(valid).success, true);
+  const before = portfolio.exportState();
+  assert.equal(portfolio.executeFill({ ...valid, orderId: 'bad_sell', side: 'sell', shares: -10 }).success, false);
+  assert.deepEqual(portfolio.exportState(), before, 'rejected fill must preserve an existing position too');
 });
 
 test('Margin cushion and forced liquidation trigger on maintenance breach', () => {
@@ -251,5 +386,3 @@ test('Engine state survives a JSON round trip and resumes identically', () => {
   assert.deepEqual(priceRow(restored), priceRow(engine), 'Restored engine must keep producing the identical sequence');
   assert.equal(restored.getSnapshot().riskMetrics.netLiquidationValue, engine.getSnapshot().riskMetrics.netLiquidationValue);
 });
-
-

@@ -2,7 +2,7 @@ import { COMPANIES, Company, COMPANY_MAP, Sector, SECTORS } from '../data/compan
 import { CareerEngine, CareerEngineState } from './career';
 import { MarketRegime } from './correlation';
 import { EventGenerator, MarketEvent } from './events';
-import { Order, OrderMatchingEngine, OrderSide, OrderType, TimeInForce, TradeRecord } from './matching';
+import { Order, OrderMatchingEngine, OrderSide, OrderType, TimeInForce, TradeRecord, isValidPendingOrder, validOrderValue, validateOrderInput } from './matching';
 import { OrderBookDepth, OrderBookEngine } from './orderbook';
 import { PortfolioEngine, PortfolioEngineState, Position, RiskMetrics } from './portfolio';
 import { Candle, PricingEngine, PricingEngineState } from './pricing';
@@ -229,6 +229,9 @@ export class MarketSimulationEngine {
     takeProfitPrice?: number;
     stopLossPrice?: number;
   }): { success: boolean; orderId?: string; error?: string } {
+    const validationError = validateOrderInput(params);
+    if (validationError) return { success: false, error: validationError };
+
     const comp = COMPANY_MAP.get(params.ticker);
     if (!comp) return { success: false, error: 'Unknown ticker symbol.' };
 
@@ -238,6 +241,11 @@ export class MarketSimulationEngine {
     const depth = this.depthCache.get(params.ticker) || this.bookEngine.generateDepth(comp, priceState.price, this.pricingEngine.getRegime());
     const estFill = this.bookEngine.simulateFill(params.side, params.quantity, depth);
     const commission = this.matchingEngine.calculateCommission(params.quantity, estFill.averagePrice);
+    if (!validOrderValue(params.quantity, estFill.averagePrice)
+      || !Number.isSafeInteger(Math.round(estFill.totalCost * 100))
+      || !Number.isFinite(commission)) {
+      return { success: false, error: 'Order value is out of range.' };
+    }
 
     // Check buying power requirements
     const risk = this.portfolioEngine.calculateRiskMetrics(COMPANY_MAP);
@@ -282,7 +290,7 @@ export class MarketSimulationEngine {
 
   cancelOrder(orderId: string): boolean {
     const order = this.openOrders.get(orderId);
-    if (order && order.status === 'pending') {
+    if (order && (order.status === 'pending' || order.status === 'partially_filled')) {
       order.status = 'cancelled';
       this.openOrders.delete(orderId);
       this.actionSeq += 1;
@@ -361,7 +369,7 @@ export class MarketSimulationEngine {
 
       // Check open orders for this ticker
       for (const order of this.openOrders.values()) {
-        if (order.ticker === comp.ticker && order.status === 'pending') {
+        if (order.ticker === comp.ticker && (order.status === 'pending' || order.status === 'partially_filled')) {
           this.evaluateOrder(order, depth, priceState.price);
         }
       }
@@ -393,12 +401,13 @@ export class MarketSimulationEngine {
     const fillResult = this.matchingEngine.evaluatePendingOrder(order, depth, currentPrice);
     if (!fillResult || !fillResult.shouldFill) return;
 
-    const commission = this.matchingEngine.calculateCommission(order.quantity, fillResult.fillPrice);
+    const remainingShares = order.quantity - order.filledQuantity;
+    const commission = this.matchingEngine.calculateCommission(remainingShares, fillResult.fillPrice);
     const fillRes = this.portfolioEngine.executeFill({
       orderId: order.id,
       ticker: order.ticker,
       side: order.side,
-      shares: order.quantity,
+      shares: remainingShares,
       price: fillResult.fillPrice,
       commission,
       slippageDollars: fillResult.slippage,
@@ -411,7 +420,7 @@ export class MarketSimulationEngine {
       order.filledQuantity = order.quantity;
       order.filledAt = Date.now();
       order.averageFillPrice = fillResult.fillPrice;
-      order.commissionPaid = commission;
+      order.commissionPaid += commission;
       this.openOrders.delete(order.id);
       this.actionSeq += 1;
 
@@ -474,7 +483,7 @@ export class MarketSimulationEngine {
 
     // Cancel unfilled DAY orders
     for (const [id, order] of this.openOrders.entries()) {
-      if (order.timeInForce === 'DAY') {
+      if (order.timeInForce === 'DAY' && isValidPendingOrder(order)) {
         order.status = 'cancelled';
         this.openOrders.delete(id);
       }

@@ -1,7 +1,7 @@
 import { Company, Sector, SECTORS } from '../data/companies';
 import { Money } from '../lib/money';
 import { EquityAssetClass } from './assets/equity';
-import { OrderSide, TradeRecord } from './matching';
+import { OrderSide, TradeRecord, validOrderValue } from './matching';
 
 export interface Position {
   ticker: string;
@@ -172,6 +172,12 @@ export class PortfolioEngine {
     }
   ): { success: boolean; error?: string; tradeRecord?: TradeRecord } {
     const { ticker, side, shares, price, commission, timestamp, orderId, slippageDollars, initialStopPrice } = trade;
+    if (!validOrderValue(shares, price)
+      || !Number.isFinite(commission) || commission < 0 || !Number.isSafeInteger(Math.round(commission * 100))
+      || !Number.isFinite(slippageDollars) || slippageDollars < 0 || !Number.isSafeInteger(Math.round(slippageDollars * 100))
+      || (initialStopPrice !== undefined && !validOrderValue(shares, initialStopPrice))) {
+      return { success: false, error: 'Invalid fill quantity or price.' };
+    }
     const existing = this.positions.get(ticker);
     const notional = shares * price;
 
