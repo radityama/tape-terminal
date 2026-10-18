@@ -2,6 +2,8 @@
 
 TAPE is a professional, browser-based stock trading game and financial terminal. It combines Bloomberg-class information density, realistic market microstructure, and a career progression system. Everything runs client-side with deterministic seeded generation.
 
+Planning, known gaps and deferred work live in [docs/ROADMAP.md](docs/ROADMAP.md).
+
 ---
 
 ## 1. Product Overview

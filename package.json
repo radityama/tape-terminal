@@ -1,5 +1,5 @@
 {
-  "name": "ai-studio-applet",
+  "name": "tape",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -8,8 +8,7 @@
     "start": "next start",
     "lint": "eslint .",
     "test": "vitest run",
-    "check": "bun run lint && bunx tsc --noEmit && bun run test && bun run build",
-    "clean": "next clean"
+    "check": "bun run lint && bunx tsc --noEmit && bun run test && bun run build"
   },
   "dependencies": {
     "@phosphor-icons/react": "^2.1.10",
