@@ -26,6 +26,21 @@ test('a verified empty guest store starts a ready session once', async () => {
   inspected.mockRestore();
 });
 
+test('skipping to the next day persists the new day immediately', async () => {
+  await useTerminalStore.getState().initSession();
+  expect(useTerminalStore.getState().sessionPhase).toBe('ready');
+  expect((await saveManager.save(1)).ok).toBe(true);
+
+  useTerminalStore.getState().skipToNextDay();
+
+  await vi.waitFor(async () => {
+    const row = await db.savedGames.get('slot_1');
+    expect(row?.payload).toBeTruthy();
+    const payload = JSON.parse(row!.payload!) as { game: { simDay: number } };
+    expect(payload.game.simDay).toBe(2);
+  });
+});
+
 test('an account switch during save inspection enters recovery without creating an engine', async () => {
   const inspection = vi.spyOn(saveManager, 'listAllSlots').mockImplementation(async () => {
     useAuthStore.setState({ user: { id: 'different-account', email: null, providers: [] } });

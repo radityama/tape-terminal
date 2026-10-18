@@ -480,6 +480,10 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
     if (engine) {
       engine.skipToNextDay();
       set({ snapshot: engine.getSnapshot(), activeModal: 'eod' });
+      // The snapshot is set directly here, so the day-change autosave in setSnapshot never
+      // runs. Persist the skipped day immediately like any other player action; otherwise a
+      // reload before the next timer tick reopens the day that was just settled.
+      saveManager.notePlayerAction();
     }
   },
 }));
