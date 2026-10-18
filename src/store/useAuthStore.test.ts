@@ -66,6 +66,8 @@ beforeEach(async () => {
   fake.deferredDelete = null;
   useAuthStore.getState().init();
   await vi.waitFor(() => expect(useAuthStore.getState().ready).toBe(true));
+  saveManager.resumeCloudWrites();
+  saveManager.enableCloudWritesAfterDeletion();
   useAuthStore.setState({ signedIn: true, user: { id: 'owner', email: 'owner@example.com', providers: [] }, error: null });
 });
 
@@ -96,6 +98,23 @@ test('failed listing resumes cloud sync without deleting or losing queued local 
   expect(await useAuthStore.getState().deleteCloudSaves()).toMatchObject({ status: 'failed', deletedSlots: [] });
   expect(saveManager.getCloudSyncState()).toBe('active');
   expect(fake.deleteCalls).toBe(0);
+});
+
+test('a failed retry listing cannot resume sync after a partial deletion', async () => {
+  fake.failSlot = 2;
+  expect(await useAuthStore.getState().deleteCloudSaves()).toMatchObject({ status: 'partial', deletedSlots: [1], failedSlots: [2] });
+  expect(saveManager.getCloudSyncState()).toBe('paused_for_deletion');
+  fake.failList = true;
+  expect(await useAuthStore.getState().deleteCloudSaves()).toMatchObject({ status: 'failed' });
+  expect(saveManager.getCloudSyncState()).toBe('paused_for_deletion');
+  expect([...fake.rows]).toEqual([2]);
+});
+
+test('a failed later deletion inspection cannot re-enable sync after successful deletion', async () => {
+  expect(await useAuthStore.getState().deleteCloudSaves()).toMatchObject({ status: 'success' });
+  fake.failList = true;
+  expect(await useAuthStore.getState().deleteCloudSaves()).toMatchObject({ status: 'failed' });
+  expect(saveManager.getCloudSyncState()).toBe('disabled_after_deletion');
 });
 
 test('successful deletion followed by failed sign-out leaves the account signed in with sync disabled', async () => {

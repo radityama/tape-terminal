@@ -216,8 +216,9 @@ class SaveManagerImpl {
     return this.cloud !== null;
   }
 
-  async pauseCloudWrites(timeoutMs = 10000): Promise<void> {
-    this.cloudSyncState = 'paused_for_deletion';
+  async pauseCloudWrites(timeoutMs = 10000): Promise<CloudSyncLifecycle> {
+    const previousState = this.cloudSyncState;
+    if (previousState === 'active') this.cloudSyncState = 'paused_for_deletion';
     this.updateStatus();
     if (this.cloudTimer) clearTimeout(this.cloudTimer);
     this.cloudTimer = null;
@@ -226,11 +227,12 @@ class SaveManagerImpl {
     const deadline = Date.now() + timeoutMs;
     while (this.inFlight.size > 0) {
       if (Date.now() >= deadline) {
-        this.resumeCloudWrites();
+        if (previousState === 'active') this.resumeCloudWrites();
         throw new Error('Cloud write is still in progress');
       }
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
+    return previousState;
   }
 
   resumeCloudWrites(): void {

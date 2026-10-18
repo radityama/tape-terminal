@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import type { SupabaseClient, User } from '@supabase/supabase-js';
 import { createBrowserSupabase } from '../lib/supabase/client';
 import { CloudSaveStore } from '../saves/cloudStore';
-import { saveManager, SyncConflict } from '../saves/manager';
+import { saveManager, SyncConflict, type CloudSyncLifecycle } from '../saves/manager';
 
 export type AuthDialog = 'none' | 'signin' | 'account' | 'claim' | 'conflict';
 
@@ -216,8 +216,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     if (!client || !user) return failure([], [], 'Sign in before deleting cloud saves.');
     set({ deletingCloud: true, error: null });
     const store = new CloudSaveStore(client, user.id);
+    let previousSyncState: CloudSyncLifecycle;
     try {
-      await saveManager.pauseCloudWrites();
+      previousSyncState = await saveManager.pauseCloudWrites();
     } catch {
       return failure([], [], 'A cloud save is still syncing. Retry deletion in a moment.');
     }
@@ -226,7 +227,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     try {
       slots = (await store.list()).map((save) => save.slot);
     } catch {
-      saveManager.resumeCloudWrites();
+      if (previousSyncState === 'active') saveManager.resumeCloudWrites();
       return failure([], [], 'Could not check cloud saves. No deletion was confirmed.');
     }
     const deletedSlots: number[] = [];
@@ -240,7 +241,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         failedSlots.push(slot);
       }
     }
-    if (failedSlots.length) return failure(deletedSlots, failedSlots, `Could not delete cloud save ${failedSlots.join(', ')}. ${deletedSlots.length ? 'Completed deletions cannot be undone. ' : ''}Cloud sync is paused until you retry or sign out.`);
+    if (failedSlots.length) return failure(deletedSlots, failedSlots, `Could not delete cloud save ${failedSlots.join(', ')}. ${deletedSlots.length ? 'Completed deletions cannot be undone. ' : ''}Cloud sync remains ${saveManager.getCloudSyncState() === 'disabled_after_deletion' ? 'disabled' : 'paused'} until you retry or sign out.`);
     if (get().user?.id !== user.id) return failure(deletedSlots, [], 'The signed-in account changed during deletion. Check the current account before continuing.');
     saveManager.disableCloudWritesAfterDeletion();
     return { status: 'success', deletedSlots };
