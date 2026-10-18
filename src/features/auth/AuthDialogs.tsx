@@ -2,43 +2,17 @@
 
 import React, { useEffect, useState } from 'react';
 import {
-  X,
   GoogleLogo,
   GithubLogo,
   EnvelopeSimple,
   SpinnerGap,
-  WarningCircle,
   Trash,
   CloudArrowUp,
 } from '@phosphor-icons/react';
 import { useAuthStore } from '../../store/useAuthStore';
 import { saveManager } from '../../saves/manager';
 import { SaveMeta } from '../../saves/schema';
-
-function Modal({ children, width = 'max-w-md' }: { children: React.ReactNode; width?: string }) {
-  return (
-    <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4 font-sans select-none">
-      <div className={`bg-[var(--bg-1)] border border-[var(--line-strong)] rounded-[2px] ${width} w-full max-h-[85vh] flex flex-col shadow-2xl overflow-hidden`}>
-        {children}
-      </div>
-    </div>
-  );
-}
-
-function Header({ title, onClose }: { title: string; onClose: () => void }) {
-  return (
-    <div className="flex items-center justify-between px-4 py-2.5 border-b border-[var(--line)]">
-      <span className="text-[12px] uppercase tracking-wide text-[var(--text-1)]">{title}</span>
-      <button
-        onClick={onClose}
-        aria-label="Close"
-        className="p-1 rounded-[2px] text-[var(--text-3)] hover:text-[var(--text-1)] hover:bg-[var(--bg-2)] cursor-pointer"
-      >
-        <X size={14} />
-      </button>
-    </div>
-  );
-}
+import { ConfirmDialog, Dialog } from '../dialog/Dialog';
 
 const primaryBtn =
   'w-full h-[30px] rounded-[2px] bg-[var(--accent)] text-black text-[12px] font-medium flex items-center justify-center space-x-1.5 cursor-pointer hover:brightness-110 disabled:opacity-50 disabled:cursor-not-allowed';
@@ -68,8 +42,7 @@ function SignInDialog() {
 
   if (emailSentTo) {
     return (
-      <Modal>
-        <Header title="Sign In" onClose={closeDialog} />
+      <Dialog title="Sign In" onClose={closeDialog}>
         <div className="p-4 space-y-3">
           <div className="flex items-start space-x-2 text-[12px] text-[var(--text-1)]">
             <EnvelopeSimple size={16} className="mt-0.5 text-[var(--accent)] shrink-0" />
@@ -86,13 +59,12 @@ function SignInDialog() {
             {cooldown > 0 ? `Resend in ${cooldown}s` : 'Resend link'}
           </button>
         </div>
-      </Modal>
+      </Dialog>
     );
   }
 
   return (
-    <Modal>
-      <Header title="Sign In" onClose={closeDialog} />
+    <Dialog title="Sign In" onClose={closeDialog}>
       <div className="p-4 space-y-3">
         <p className="text-[11px] text-[var(--text-2)]">
           Signing in backs up your saves and syncs them across devices. You can keep playing as a guest.
@@ -136,7 +108,7 @@ function SignInDialog() {
           Continue with Google
         </button>
       </div>
-    </Modal>
+    </Dialog>
   );
 }
 
@@ -157,9 +129,30 @@ function AccountDialog() {
     void saveManager.listAllSlots().then((slots) => setCloudCount(slots.filter((s) => s.cloudUpdatedAt !== undefined).length));
   }, []);
 
+  if (confirmDelete) {
+    return (
+      <ConfirmDialog
+        title="Delete cloud saves?"
+        confirmLabel={`Delete ${cloudCount} cloud ${cloudCount === 1 ? 'save' : 'saves'}`}
+        onCancel={() => setConfirmDelete(false)}
+        onConfirm={() => {
+          void deleteCloudSaves().then(() => {
+            setConfirmDelete(false);
+            closeDialog();
+          });
+        }}
+        busy={loading}
+      >
+        <p>
+          This deletes {cloudCount} cloud {cloudCount === 1 ? 'save' : 'saves'} from your account. Saves on this
+          device stay. This cannot be undone.
+        </p>
+      </ConfirmDialog>
+    );
+  }
+
   return (
-    <Modal>
-      <Header title="Account" onClose={closeDialog} />
+    <Dialog title="Account" onClose={closeDialog}>
       <div className="p-4 space-y-3 text-[12px]">
         <div className="space-y-1">
           <div className="text-[10px] uppercase tracking-wide text-[var(--text-3)]">Email</div>
@@ -188,39 +181,16 @@ function AccountDialog() {
         </button>
 
         <div className="pt-2 border-t border-[var(--line)] space-y-2">
-          {confirmDelete ? (
-            <div className="space-y-2">
-              <div className="flex items-start space-x-2 text-[11px] text-[var(--down)]">
-                <WarningCircle size={15} className="mt-0.5 shrink-0" />
-                <span>
-                  This deletes {cloudCount} cloud {cloudCount === 1 ? 'save' : 'saves'} from your account. Saves on
-                  this device stay. This cannot be undone.
-                </span>
-              </div>
-              <button
-                className={`${primaryBtn} bg-[var(--down)] text-black`}
-                disabled={loading}
-                onClick={() => void deleteCloudSaves().then(() => setConfirmDelete(false))}
-              >
-                <Trash size={14} />
-                Delete cloud saves
-              </button>
-              <button className={secondaryBtn} onClick={() => setConfirmDelete(false)}>
-                Cancel
-              </button>
-            </div>
-          ) : (
-            <button
-              className="w-full h-[30px] rounded-[2px] border border-[var(--down)] text-[var(--down)] text-[12px] flex items-center justify-center space-x-1.5 cursor-pointer hover:bg-[var(--down)]/10"
-              onClick={() => setConfirmDelete(true)}
-            >
-              <Trash size={14} />
-              Delete my cloud saves
-            </button>
-          )}
+          <button
+            className="w-full h-[30px] rounded-[2px] border border-[var(--line)] text-[var(--text-1)] text-[12px] flex items-center justify-center space-x-1.5 cursor-pointer hover:bg-[var(--bg-2)]"
+            onClick={() => setConfirmDelete(true)}
+          >
+            <Trash size={14} />
+            Delete my cloud saves
+          </button>
         </div>
       </div>
-    </Modal>
+    </Dialog>
   );
 }
 
@@ -260,8 +230,7 @@ function ClaimSavesDialog() {
   };
 
   return (
-    <Modal>
-      <Header title="Upload Local Saves" onClose={closeDialog} />
+    <Dialog title="Upload Local Saves" onClose={closeDialog}>
       <div className="p-4 space-y-3 text-[12px]">
         <p className="text-[11px] text-[var(--text-2)]">
           These saves live on this device only. Choose which ones to upload to your account.
@@ -309,7 +278,7 @@ function ClaimSavesDialog() {
           Upload to my account
         </button>
       </div>
-    </Modal>
+    </Dialog>
   );
 }
 
@@ -353,8 +322,7 @@ function ConflictDialog() {
   };
 
   return (
-    <Modal width="max-w-lg">
-      <Header title={`Save Conflict in Slot ${slot}`} onClose={closeDialog} />
+    <Dialog title={`Save Conflict in Slot ${slot}`} onClose={closeDialog} width="max-w-lg">
       <div className="p-4 space-y-3 text-[12px]">
         <p className="text-[11px] text-[var(--text-2)]">
           This slot was changed on another device. Choose which copy to keep. Nothing is overwritten until you choose.
@@ -385,7 +353,7 @@ function ConflictDialog() {
           </button>
         </div>
       </div>
-    </Modal>
+    </Dialog>
   );
 }
 

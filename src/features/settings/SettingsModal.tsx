@@ -5,7 +5,8 @@ import { useTerminalStore } from '../../store/useTerminalStore';
 import { saveManager, LoadOutcome } from '../../saves/manager';
 import { SaveMeta } from '../../saves/schema';
 import { SaveStatusRow } from '../auth/SyncIndicator';
-import { X, FloppyDisk, DownloadSimple, UploadSimple, ArrowClockwise } from '@phosphor-icons/react';
+import { ConfirmDialog, Dialog } from '../dialog/Dialog';
+import { FloppyDisk, DownloadSimple, UploadSimple } from '@phosphor-icons/react';
 
 export function SettingsModal() {
   const activeModal = useTerminalStore((s) => s.activeModal);
@@ -27,6 +28,7 @@ export function SettingsModal() {
   const [customSeed, setCustomSeed] = useState(seed);
   const [importJsonText, setImportJsonText] = useState('');
   const [showImportBox, setShowImportBox] = useState(false);
+  const [pendingSeed, setPendingSeed] = useState<{ seed: string; save: SaveMeta } | null>(null);
 
   const refreshSlots = () => {
     saveManager.listSlots().then(setSavesList);
@@ -111,34 +113,68 @@ export function SettingsModal() {
     }
   };
 
-  const handleApplySeed = () => {
-    if (customSeed.trim()) {
-      const slot = saveManager.getActiveSlot();
-      const replaced = window.confirm('Generating a new universe replaces the current career in this slot. Continue?');
-      if (!replaced) return;
-      initEngine(customSeed.trim(), 'career', 100000);
-      void saveManager.save(slot, { force: true });
-      addToast({ title: 'Seed Applied', message: `New universe generated with seed: ${customSeed.trim()}.`, type: 'info' });
-      setActiveModal('none');
+  const applySeed = async (seedValue: string) => {
+    const previous = useTerminalStore.getState();
+    const slot = saveManager.getActiveSlot();
+    initEngine(seedValue, 'career', 100000);
+    try {
+      const result = await saveManager.save(slot, { force: true });
+      if (!result.ok) throw new Error('Save failed');
+    } catch {
+      useTerminalStore.setState(previous);
+      if (previous.engineId) {
+        saveManager.bindSession(slot, previous.engineId);
+        saveManager.markSessionReady();
+      } else {
+        saveManager.endSession();
+      }
+      addToast({ title: 'Save Failed', message: 'Could not save the new universe. Your previous save has not been replaced.', type: 'error' });
+      return;
     }
+    addToast({ title: 'Seed Applied', message: `New universe generated with seed: ${seedValue}.`, type: 'info' });
+    setActiveModal('none');
   };
 
-  return (
-    <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4 font-sans select-none">
-      <div className="bg-[var(--bg-1)] border border-[var(--line-strong)] rounded-[2px] max-w-2xl w-full max-h-[85vh] flex flex-col shadow-2xl overflow-hidden">
-        {/* Header */}
-        <div className="h-10 border-b border-[var(--line)] px-4 flex items-center justify-between bg-[var(--bg-0)] shrink-0">
-          <span className="font-bold font-mono text-[13px] text-[var(--text-1)]">
-            Terminal Settings & Save Slots
-          </span>
-          <button
-            onClick={() => setActiveModal('none')}
-            className="p-1 rounded-[2px] hover:bg-[var(--line)] text-[var(--text-3)] hover:text-[var(--text-1)] cursor-pointer"
-          >
-            <X size={16} weight="bold" />
-          </button>
-        </div>
+  const handleApplySeed = async () => {
+    const seedValue = customSeed.trim();
+    if (!seedValue) return;
+    let current: SaveMeta | undefined;
+    try {
+      current = (await saveManager.listAllSlots()).find((slot) => slot.slot === saveManager.getActiveSlot())?.meta;
+    } catch {
+      addToast({ title: 'Slot Check Failed', message: 'Could not check your saves. Try again.', type: 'error' });
+      return;
+    }
+    if (current) {
+      setPendingSeed({ seed: seedValue, save: current });
+      return;
+    }
+    await applySeed(seedValue);
+  };
 
+  if (pendingSeed) {
+    const currentSave = pendingSeed.save;
+    return (
+      <ConfirmDialog
+        title="Generate a new universe?"
+        confirmLabel={`Replace ${currentSave.name} (Day ${currentSave.simDay}, $${currentSave.equity.toLocaleString()})`}
+        onCancel={() => setPendingSeed(null)}
+        onConfirm={() => {
+          const seedValue = pendingSeed.seed;
+          setPendingSeed(null);
+          void applySeed(seedValue);
+        }}
+      >
+        <p>
+          A new universe replaces the save in {currentSave.name} (Day {currentSave.simDay}, $
+          {currentSave.equity.toLocaleString()}). This cannot be undone.
+        </p>
+      </ConfirmDialog>
+    );
+  }
+
+  return (
+    <Dialog title="Terminal Settings & Save Slots" onClose={() => setActiveModal('none')} width="max-w-2xl">
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
           {/* Difficulty Preset */}
           <div className="bg-[var(--bg-0)] p-3 border border-[var(--line)] rounded-[2px] space-y-2">
@@ -338,7 +374,6 @@ export function SettingsModal() {
             </div>
           </div>
         </div>
-      </div>
-    </div>
+    </Dialog>
   );
 }

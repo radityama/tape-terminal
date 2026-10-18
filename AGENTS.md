@@ -11,3 +11,5 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 ## Project rules
 
 - Any deferred work, known gap or tech debt found while working must be added to docs/ROADMAP.md with a trigger condition.
+
+- Never use native browser dialogs; use the shared dialog component.
