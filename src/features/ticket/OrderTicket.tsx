@@ -99,7 +99,7 @@ export function OrderTicket() {
       resultingBuyingPower,
       positionFraction,
       isLargeOrder,
-      hasSufficientBuyingPower: activeSide === 'sell' || (heldShares < 0 && qty <= -heldShares)
+      hasSufficientBuyingPower: activeSide === 'sell' || (heldShares < 0 && commitmentShares <= -heldShares)
         || commitmentShares * commitmentPrice + commitmentFee <= currentBuyingPower,
     };
   }, [orderQuantity, activeSide, orderType, limitPrice, currentPrice, depth, risk, isMarginUnlocked, heldShares]);
