@@ -21,12 +21,39 @@ export interface OrderBookDepth {
 }
 
 export interface FillSimulation {
+  filledQuantity: number;
+  fills: Array<{ level: number; shares: number }>;
   averagePrice: number;
   slippageDollars: number;
   slippageBps: number;
   basePrice: number;
   totalCost: number;
   levelsWalked: number;
+}
+
+export function walkDepth(side: 'buy' | 'sell', quantity: number, depth: OrderBookDepth, limitPrice?: number): FillSimulation {
+  const levels = side === 'buy' ? depth.asks : depth.bids;
+  const first = levels.find((level) => level.size > 0);
+  const basePrice = first?.price ?? (side === 'buy' ? depth.bestAsk : depth.bestBid);
+  let remaining = Math.max(0, Math.floor(quantity));
+  let value = 0;
+  const fills: FillSimulation['fills'] = [];
+  for (const [levelIndex, level] of levels.entries()) {
+    if (!remaining || (limitPrice !== undefined && (side === 'buy' ? level.price > limitPrice : level.price < limitPrice))) break;
+    const shares = Math.min(remaining, level.size);
+    if (!shares) continue;
+    fills.push({ level: levelIndex, shares });
+    value += shares * level.price;
+    remaining -= shares;
+  }
+  const filledQuantity = Math.max(0, Math.floor(quantity)) - remaining;
+  const averagePrice = filledQuantity ? Math.round(value / filledQuantity * 100) / 100 : 0;
+  const slippageDollars = filledQuantity ? Math.abs(averagePrice - basePrice) : 0;
+  return {
+    filledQuantity, fills, averagePrice, slippageDollars,
+    slippageBps: basePrice > 0 ? Math.round(slippageDollars / basePrice * 100000) / 10 : 0,
+    basePrice, totalCost: Math.round(value * 100) / 100, levelsWalked: fills.length,
+  };
 }
 
 export class OrderBookEngine {
@@ -109,53 +136,7 @@ export class OrderBookEngine {
     };
   }
 
-  // Simulates market order fill by walking through the book levels (slippage modeling)
-  simulateFill(
-    side: 'buy' | 'sell',
-    quantity: number,
-    depth: OrderBookDepth
-  ): FillSimulation {
-    const qty = Math.max(1, Math.floor(quantity));
-    const levels = side === 'buy' ? depth.asks : depth.bids;
-    const basePrice = side === 'buy' ? depth.bestAsk : depth.bestBid;
-
-    let remainingQty = qty;
-    let accumulatedValue = 0;
-    let levelsWalked = 0;
-
-    for (let i = 0; i < levels.length; i++) {
-      if (remainingQty <= 0) break;
-      levelsWalked = i + 1;
-      const level = levels[i];
-      const fillAtLevel = Math.min(remainingQty, level.size);
-      accumulatedValue += fillAtLevel * level.price;
-      remainingQty -= fillAtLevel;
-    }
-
-    // If order is massive and completely sweeps the 5 visible levels:
-    if (remainingQty > 0) {
-      const lastLevel = levels[levels.length - 1];
-      const overflowStep = depth.spread * 1.5;
-      const overflowPrice = side === 'buy'
-        ? lastLevel.price + overflowStep
-        : Math.max(0.01, lastLevel.price - overflowStep);
-
-      accumulatedValue += remainingQty * overflowPrice;
-      levelsWalked += 1;
-    }
-
-    const averagePrice = Math.round((accumulatedValue / qty) * 100) / 100;
-    const slippageDollars = Math.abs(averagePrice - basePrice);
-    const slippageBps = Math.round((slippageDollars / basePrice) * 10000 * 10) / 10;
-    const totalCost = Math.round(accumulatedValue * 100) / 100;
-
-    return {
-      averagePrice,
-      slippageDollars,
-      slippageBps,
-      basePrice,
-      totalCost,
-      levelsWalked,
-    };
+  simulateFill(side: 'buy' | 'sell', quantity: number, depth: OrderBookDepth, limitPrice?: number): FillSimulation {
+    return walkDepth(side, quantity, depth, limitPrice);
   }
 }

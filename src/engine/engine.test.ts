@@ -154,7 +154,7 @@ test('a restored partially filled order executes only its remaining shares', () 
   assert.equal(after.recentTrades[0].commission, 1.5);
   assert.equal(after.positions.find((position) => position.ticker === 'VCRX')?.shares, 1000);
   assert.equal(before.portfolio.positions.find((position) => position.ticker === 'VCRX')?.shares, 997);
-  assert.deepEqual(after.openOrders.filter((order) => order.ticker === 'VCRX').map((order) => [order.type, order.quantity]), [['limit', 1000], ['stop', 1000]]);
+  assert.deepEqual(after.openOrders.filter((order) => order.ticker === 'VCRX').map((order) => [order.type, order.quantity]), [['limit', 3], ['stop', 3]]);
 });
 
 test('a partial sell closes only its remaining long shares', () => {
@@ -436,10 +436,11 @@ test('same-tick legacy buys compete deterministically across tickers without ove
     engine.tick(0.05);
     const after = engine.exportState();
     assert.equal(after.portfolio.positions.find((position) => position.ticker === 'VCRX')?.shares, 5);
-    assert.equal(after.portfolio.positions.find((position) => position.ticker === 'HLVG'), undefined);
+    assert.ok((after.portfolio.positions.find((position) => position.ticker === 'HLVG')?.shares ?? 0) > 0);
+    assert.ok((after.portfolio.positions.find((position) => position.ticker === 'HLVG')?.shares ?? 0) < 5);
     assert.ok(Number(after.portfolio.cash) >= 0);
-    assert.deepEqual(after.openOrders.map((order) => order.id), [first.orderId]);
-    assert.equal(after.portfolio.tradeHistory.length, 1);
+    assert.deepEqual(after.openOrders.map((order) => [order.id, order.status]), [[first.orderId, 'partially_filled']]);
+    assert.equal(after.portfolio.tradeHistory.length, 2);
     results.push([after.portfolio.cash, after.portfolio.positions.map(({ entryTimestamp, ...position }) => position),
       after.openOrders, after.actionSeq, after.rngState]);
   }
@@ -457,9 +458,10 @@ test('saved order sequence breaks ties when two pending buys have the same creat
   restored.tick(0.05);
   const after = restored.exportState();
   assert.equal(after.portfolio.positions.find((position) => position.ticker === 'HLVG')?.shares, 5);
-  assert.equal(after.portfolio.positions.find((position) => position.ticker === 'VCRX'), undefined);
-  assert.deepEqual(after.openOrders.map((order) => order.id), ['legacy_vcrx']);
-  assert.equal(after.portfolio.tradeHistory.length, 1);
+  assert.ok((after.portfolio.positions.find((position) => position.ticker === 'VCRX')?.shares ?? 0) > 0);
+  assert.ok((after.portfolio.positions.find((position) => position.ticker === 'VCRX')?.shares ?? 0) < 5);
+  assert.deepEqual(after.openOrders.map((order) => [order.id, order.status]), [['legacy_vcrx', 'partially_filled']]);
+  assert.equal(after.portfolio.tradeHistory.length, 2);
 });
 
 test('own reservation is not charged again when a pending buy fills after a market buy', () => {
@@ -557,7 +559,7 @@ test('one short position cannot fund two independent covering orders', () => {
   assert.equal(engine.getSnapshot().riskMetrics.buyingPower, 0);
 });
 
-test('a buy stop gap stays pending with no fill mutation when its actual price is unaffordable', () => {
+test('a buy stop gap fills only the affordable prefix at its actual price', () => {
   const engine = new MarketSimulationEngine('G2_GAP', 1000);
   const placed = engine.placeOrder({ ticker: 'HLVG', side: 'buy', type: 'stop', quantity: 5, stopPrice: 200 });
   assert.equal(placed.success, true);
@@ -568,9 +570,12 @@ test('a buy stop gap stays pending with no fill mutation when its actual price i
   const before = restored.exportState();
   restored.tick(0.05);
   const after = restored.exportState();
-  assert.deepEqual(after.portfolio, before.portfolio);
-  assert.deepEqual(after.openOrders, before.openOrders);
-  assert.equal(after.actionSeq, before.actionSeq);
+  assert.equal(before.portfolio.tradeHistory.length, 0);
+  assert.equal(after.portfolio.positions.find((position) => position.ticker === 'HLVG')?.shares, 3);
+  assert.equal(after.portfolio.tradeHistory[0].commission, 1.5);
+  assert.equal(after.openOrders[0].filledQuantity, 3);
+  assert.equal(after.openOrders[0].stopTriggered, true);
+  assert.ok(after.actionSeq > before.actionSeq);
 });
 
 test('pending fills use the current tick mark when another position moves', () => {
@@ -588,12 +593,12 @@ test('pending fills use the current tick mark when another position moves', () =
   const before = engine.exportState();
   engine.tick(0.05);
   const after = engine.exportState();
-  assert.equal(after.portfolio.cash, before.portfolio.cash);
-  assert.equal(after.portfolio.tradeHistory.length, before.portfolio.tradeHistory.length);
-  assert.equal(after.portfolio.positions.find((position) => position.ticker === 'HLVG'), undefined,
-    'a falling VCRX mark leaves too little margin for the HLVG fill');
+  assert.ok((after.portfolio.positions.find((position) => position.ticker === 'HLVG')?.shares ?? 0) > 0,
+    'only an affordable prefix of the HLVG order can fill after VCRX moves');
+  assert.ok((after.portfolio.positions.find((position) => position.ticker === 'HLVG')?.shares ?? 0) < 5);
+  assert.equal(after.portfolio.tradeHistory.length, before.portfolio.tradeHistory.length + 1);
   assert.ok(after.portfolio.positions.find((position) => position.ticker === 'VCRX')!.marketValue < 600);
-  assert.deepEqual(after.openOrders.map((order) => order.id), [placed.orderId]);
+  assert.deepEqual(after.openOrders.map((order) => [order.id, order.status]), [[placed.orderId, 'partially_filled']]);
 });
 
 test('cash accounts refuse leveraged buys while margin accounts allow only funded 2:1 exposure', () => {

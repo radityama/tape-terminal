@@ -57,6 +57,36 @@ test('save round trips through the codec with money kept as decimal strings', ()
   assert.equal(typeof w.game.pricing.states[0].price, 'string');
 });
 
+test('v1 save codec preserves partial execution, cumulative fees and a triggered remainder', () => {
+  const engine = new MarketSimulationEngine('G9_SAVE_PARTIAL', 100_000_000);
+  const visible = engine.getDepth('HLVG')!.asks.reduce((sum, level) => sum + level.size, 0);
+  const placed = engine.placeOrder({ ticker: 'HLVG', side: 'buy', type: 'stop', quantity: visible + 7,
+    stopPrice: 0.01, timeInForce: 'GTC' });
+  assert.equal(placed.success, true);
+  engine.tick(0.05);
+  const save = makeSave(engine, 'G9_SAVE_PARTIAL');
+  const wire = wireOf(save);
+  const decoded = SaveGameSchema.decode(wire);
+  assert.equal(decoded.schemaVersion, 1);
+  assert.deepEqual(wireOf(decoded), wire);
+  const partial = decoded.game.openOrders.find((order) => order.id === placed.orderId)!;
+  assert.equal(partial.status, 'partially_filled');
+  assert.equal(partial.stopTriggered, true);
+  assert.ok(partial.filledQuantity > 0 && partial.filledQuantity < visible + 7);
+  assert.equal(partial.commissionPaid, decoded.game.portfolio.tradeHistory[0].commission);
+  assert.equal(partial.averageFillPrice, decoded.game.portfolio.tradeHistory[0].price);
+  const first = new MarketSimulationEngine(decoded.seed);
+  const second = new MarketSimulationEngine(decoded.seed);
+  first.importState(decoded.game);
+  second.importState(decoded.game);
+  first.tick(0.05);
+  second.tick(0.05);
+  const trades = (e: MarketSimulationEngine) => e.exportState().portfolio.tradeHistory
+    .filter((trade) => trade.orderId === placed.orderId).map(({ id, timestamp, ...trade }) => trade);
+  assert.deepEqual(trades(first), trades(second));
+  assert.equal(trades(first).reduce((sum, trade) => sum + trade.shares, 0), visible + 7);
+});
+
 test('same seed and same actions reproduce identical state after save and load', () => {
   const priceRow = (e: MarketSimulationEngine) =>
     e.getSnapshot().prices.map((p) => ({ ticker: p.ticker, price: p.price, volume: p.volume }));

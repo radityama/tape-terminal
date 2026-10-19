@@ -244,10 +244,12 @@ export class MarketSimulationEngine {
     const priceState = this.pricingEngine.getState(params.ticker);
     if (!priceState) return { success: false, error: 'Price not available.' };
 
-    const depth = this.depthCache.get(params.ticker) || this.bookEngine.generateDepth(comp, priceState.price, this.pricingEngine.getRegime());
+    const depth = this.depthCache.get(params.ticker);
+    if (!depth) return { success: false, error: 'Order book not available.' };
     const estFill = this.bookEngine.simulateFill(params.side, params.quantity, depth);
-    const commission = this.matchingEngine.calculateCommission(params.quantity, estFill.averagePrice);
-    if (!validOrderValue(params.quantity, estFill.averagePrice)
+    const quote = estFill.averagePrice || estFill.basePrice;
+    const commission = this.matchingEngine.calculateCommission(estFill.filledQuantity || 1, quote);
+    if (!validOrderValue(params.quantity, quote)
       || !Number.isSafeInteger(Math.round(estFill.totalCost * 100))
       || !Number.isFinite(commission)) {
       return { success: false, error: 'Order value is out of range.' };
@@ -255,11 +257,12 @@ export class MarketSimulationEngine {
 
     // Limit prices cap the commitment; stops and market orders use the current quote.
     const reservePrice = (params.type === 'limit' || params.type === 'stop_limit')
-      ? params.limitPrice! : estFill.averagePrice;
+      ? params.limitPrice! : quote;
     const coveredShares = new Map<string, number>();
     const available = Math.max(0, this.portfolioEngine.getBuyingPower() - this.reservedBuyingPower(undefined, coveredShares));
     const requiredCapital = params.side === 'buy'
-      ? this.buyCapital(params.ticker, params.quantity, reservePrice, coveredShares.get(params.ticker) ?? 0) : 0;
+      ? this.buyCapital(params.ticker, params.type === 'market' ? 1 : params.quantity,
+        reservePrice, coveredShares.get(params.ticker) ?? 0) : 0;
 
     if (params.side === 'buy' && Math.round(requiredCapital * 100) > Math.round(available * 100)) {
       return {
@@ -353,7 +356,7 @@ export class MarketSimulationEngine {
       const depth = this.depthCache.get(order.ticker);
       if (!depth) continue;
       const price = (order.type === 'limit' || order.type === 'stop_limit')
-        ? order.limitPrice! : this.bookEngine.simulateFill('buy', shares, depth).averagePrice;
+        ? order.limitPrice! : this.bookEngine.simulateFill('buy', shares, depth).averagePrice || depth.bestAsk;
       const alreadyCovered = coveredShares.get(order.ticker) ?? 0;
       reserved += this.buyCapital(order.ticker, shares, price, alreadyCovered);
       coveredShares.set(order.ticker, alreadyCovered + shares);
@@ -514,30 +517,53 @@ export class MarketSimulationEngine {
       }
     }
 
-    const commission = this.matchingEngine.calculateCommission(remainingShares, fillResult.fillPrice);
-    if (order.side === 'buy') {
-      const coveredShares = new Map<string, number>();
-      const available = Math.max(0, this.portfolioEngine.getBuyingPower() - this.reservedBuyingPower(order, coveredShares));
-      if (Math.round(this.buyCapital(order.ticker, remainingShares, fillResult.fillPrice, coveredShares.get(order.ticker) ?? 0) * 100) > Math.round(available * 100)) {
-        if (order.isBracketChild) {
-          // Linked exits fail closed: a stale leg must not retry forever.
-          order.status = 'rejected';
-          this.openOrders.delete(order.id);
-          this.actionSeq += 1;
-          this.reconcileBracketOrders(order.ticker);
-        }
-        return; // An independent gap or older reservation keeps the order pending for retry/cancellation.
+    let fill = fillResult;
+    let shares = fill.filledQuantity;
+    if (order.side === 'sell' && !this.portfolioEngine.exportState().shortingUnlocked
+      && remainingShares > Math.max(0, this.portfolioEngine.getPosition(order.ticker)?.shares ?? 0)) return;
+    const coveredShares = new Map<string, number>();
+    const available = order.side === 'buy'
+      ? Math.max(0, this.portfolioEngine.getBuyingPower() - this.reservedBuyingPower(order, coveredShares)) : 0;
+    const affordable = (quantity: number) => {
+      const candidate = this.bookEngine.simulateFill(order.side, quantity, depth,
+        order.type === 'limit' || order.type === 'stop_limit' ? order.limitPrice : undefined);
+      if (candidate.filledQuantity !== quantity) return false;
+      const commission = this.matchingEngine.calculateCommission(quantity, candidate.averagePrice);
+      if (order.side === 'buy' && Math.round(this.buyCapital(order.ticker, quantity, candidate.averagePrice,
+        coveredShares.get(order.ticker) ?? 0) * 100) > Math.round(available * 100)) return false;
+      return !this.portfolioEngine.checkFill({ orderId: order.id, ticker: order.ticker, side: order.side,
+        shares: quantity, price: candidate.averagePrice, commission, slippageDollars: candidate.slippageDollars,
+        timestamp: Date.now(), initialStopPrice: order.stopLossPrice });
+    };
+    let low = 0;
+    let high = shares;
+    while (low < high) {
+      const middle = Math.ceil((low + high) / 2);
+      if (affordable(middle)) low = middle;
+      else high = middle - 1;
+    }
+    shares = low;
+    if (shares) fill = { ...fill, ...this.bookEngine.simulateFill(order.side, shares, depth,
+      order.type === 'limit' || order.type === 'stop_limit' ? order.limitPrice : undefined) };
+    const commission = shares ? this.matchingEngine.calculateCommission(shares, fill.averagePrice) : 0;
+    if (!shares) {
+      if (order.isBracketChild) {
+        order.status = 'rejected';
+        this.openOrders.delete(order.id);
+        this.actionSeq += 1;
+        this.reconcileBracketOrders(order.ticker);
       }
+      return;
     }
     const sharesBeforeFill = this.portfolioEngine.getPosition(order.ticker)?.shares ?? 0;
     const fillRes = this.portfolioEngine.executeFill({
       orderId: order.id,
       ticker: order.ticker,
       side: order.side,
-      shares: remainingShares,
-      price: fillResult.fillPrice,
+      shares,
+      price: fill.averagePrice,
       commission,
-      slippageDollars: fillResult.slippage,
+      slippageDollars: fill.slippageDollars,
       timestamp: Date.now(),
       initialStopPrice: order.stopLossPrice,
     });
@@ -553,12 +579,22 @@ export class MarketSimulationEngine {
     }
 
     if (fillRes.success && fillRes.tradeRecord) {
-      order.status = 'filled';
-      order.filledQuantity = order.quantity;
-      order.filledAt = Date.now();
-      order.averageFillPrice = fillResult.fillPrice;
+      const levels = order.side === 'buy' ? depth.asks : depth.bids;
+      for (const consumed of fill.fills) levels[consumed.level].size -= consumed.shares;
+      for (const side of [depth.asks, depth.bids]) {
+        let total = 0;
+        for (const level of side) { total += level.size; level.total = total; }
+      }
+      depth.bestAsk = depth.asks.find((level) => level.size > 0)?.price ?? depth.asks.at(-1)!.price;
+      depth.bestBid = depth.bids.find((level) => level.size > 0)?.price ?? depth.bids.at(-1)!.price;
+      const previous = order.filledQuantity;
+      order.filledQuantity += shares;
+      order.status = order.filledQuantity === order.quantity ? 'filled' : 'partially_filled';
+      if (order.status === 'filled') order.filledAt = Date.now();
+      order.averageFillPrice = Math.round(((order.averageFillPrice ?? fill.averagePrice) * previous + fill.averagePrice * shares)
+        / order.filledQuantity * 100) / 100;
       order.commissionPaid += commission;
-      this.openOrders.delete(order.id);
+      if (order.status === 'filled') this.openOrders.delete(order.id);
       this.actionSeq += 1;
 
       // First fill achievement
@@ -578,17 +614,16 @@ export class MarketSimulationEngine {
 
       // An exit that completed cancels its OCO sibling before any later order in this
       // tick (including the sibling itself) can be evaluated.
-      if (order.isBracketChild) {
+      if (order.isBracketChild && (order.status === 'filled' || !this.portfolioEngine.getPosition(order.ticker))) {
         this.cancelOcoSibling(order);
       }
 
       // Clamp or cancel surviving exits for this ticker before creating new children.
-      this.reconcileBracketOrders(order.ticker);
-
       const sharesAfterFill = this.portfolioEngine.getPosition(order.ticker)?.shares ?? 0;
       if (!order.isBracketChild) {
         this.createBracketChildrenForFill(order, sharesBeforeFill, sharesAfterFill);
       }
+      this.reconcileBracketOrders(order.ticker);
 
       if (this.onTradeFillCallback) {
         this.onTradeFillCallback(fillRes.tradeRecord);
@@ -600,26 +635,23 @@ export class MarketSimulationEngine {
   // closes/reduces an existing position must never attach inverse brackets.
   private createBracketChildrenForFill(order: Order, sharesBefore: number, sharesAfter: number) {
     if (order.takeProfitPrice === undefined && order.stopLossPrice === undefined) return;
-    if (order.filledQuantity !== order.quantity) return;
-
-    const openedInOrderDirection = order.side === 'buy'
-      ? Math.max(0, sharesAfter) > Math.max(0, sharesBefore)
-      : Math.max(0, -sharesAfter) > Math.max(0, -sharesBefore);
-    if (!openedInOrderDirection) return;
-    if ([...this.openOrders.values()].some((o) => o.isBracketChild && o.parentOrderId === order.id)) return;
+    const opened = order.side === 'buy'
+      ? Math.max(0, sharesAfter) - Math.max(0, sharesBefore)
+      : Math.max(0, -sharesAfter) - Math.max(0, -sharesBefore);
+    if (opened <= 0) return;
 
     const side: OrderSide = order.side === 'buy' ? 'sell' : 'buy';
     const createdAt = Date.now();
     const children: Order[] = [];
 
     if (order.takeProfitPrice && order.takeProfitPrice > 0
-      && !validateOrderInput({ type: 'limit', quantity: order.quantity, limitPrice: order.takeProfitPrice })) {
+      && !validateOrderInput({ type: 'limit', quantity: opened, limitPrice: order.takeProfitPrice })) {
       children.push({
         id: `${order.id}_tp`,
         ticker: order.ticker,
         side,
         type: 'limit',
-        quantity: order.quantity,
+        quantity: opened,
         filledQuantity: 0,
         limitPrice: order.takeProfitPrice,
         timeInForce: 'GTC',
@@ -632,13 +664,13 @@ export class MarketSimulationEngine {
     }
 
     if (order.stopLossPrice && order.stopLossPrice > 0
-      && !validateOrderInput({ type: 'stop', quantity: order.quantity, stopPrice: order.stopLossPrice })) {
+      && !validateOrderInput({ type: 'stop', quantity: opened, stopPrice: order.stopLossPrice })) {
       children.push({
         id: `${order.id}_sl`,
         ticker: order.ticker,
         side,
         type: 'stop',
-        quantity: order.quantity,
+        quantity: opened,
         filledQuantity: 0,
         stopPrice: order.stopLossPrice,
         timeInForce: 'GTC',
@@ -650,7 +682,11 @@ export class MarketSimulationEngine {
       });
     }
 
-    for (const child of children) this.openOrders.set(child.id, child);
+    for (const child of children) {
+      const existing = this.openOrders.get(child.id);
+      if (existing && this.isLiveOrder(existing)) existing.quantity += opened;
+      else this.openOrders.set(child.id, child);
+    }
     if (children.length > 0) this.actionSeq += 1;
 
     // A parent quantity can include shares that were already closed manually, so the
@@ -877,7 +913,8 @@ export class MarketSimulationEngine {
 
   // Access depth for a specific stock
   getDepth(ticker: string): OrderBookDepth | undefined {
-    return this.depthCache.get(ticker);
+    const depth = this.depthCache.get(ticker);
+    return depth && { ...depth, bids: depth.bids.map((level) => ({ ...level })), asks: depth.asks.map((level) => ({ ...level })) };
   }
 
   // Access candles for chart

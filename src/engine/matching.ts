@@ -1,5 +1,5 @@
 import { EquityAssetClass } from './assets/equity';
-import { OrderBookDepth, OrderBookEngine } from './orderbook';
+import { FillSimulation, OrderBookDepth, OrderBookEngine } from './orderbook';
 
 export type OrderType = 'market' | 'limit' | 'stop' | 'stop_limit' | 'trailing_stop';
 export type OrderSide = 'buy' | 'sell';
@@ -114,7 +114,7 @@ export class OrderMatchingEngine {
     order: Order,
     depth: OrderBookDepth,
     currentPrice: number
-  ): { shouldFill: boolean; fillPrice: number; slippage: number } | null {
+  ): ({ shouldFill: boolean; fillPrice: number; slippage: number } & FillSimulation) | null {
     if (order.status !== 'pending' && order.status !== 'partially_filled') {
       return null;
     }
@@ -122,55 +122,24 @@ export class OrderMatchingEngine {
     if (!isValidPendingOrder(order)) return null;
 
     const side = order.side;
+    let limitPrice: number | undefined;
 
     switch (order.type) {
-      case 'market': {
-        const sim = this.bookEngine.simulateFill(side, order.quantity - order.filledQuantity, depth);
-        return {
-          shouldFill: true,
-          fillPrice: sim.averagePrice,
-          slippage: sim.slippageDollars,
-        };
-      }
+      case 'market': break;
 
       case 'limit': {
         if (!order.limitPrice) return null;
-        if (side === 'buy' && depth.bestAsk <= order.limitPrice) {
-          // Fill at the best available ask, which is favorable or equal to limit
-          return {
-            shouldFill: true,
-            fillPrice: Math.min(order.limitPrice, depth.bestAsk),
-            slippage: 0,
-          };
-        } else if (side === 'sell' && depth.bestBid >= order.limitPrice) {
-          return {
-            shouldFill: true,
-            fillPrice: Math.max(order.limitPrice, depth.bestBid),
-            slippage: 0,
-          };
-        }
-        return null;
+        limitPrice = order.limitPrice;
+        break;
       }
 
       case 'stop': {
         if (!order.stopPrice) return null;
-        if (side === 'buy' && currentPrice >= order.stopPrice) {
-          // Stop triggered: executes as market order
-          const sim = this.bookEngine.simulateFill('buy', order.quantity - order.filledQuantity, depth);
-          return {
-            shouldFill: true,
-            fillPrice: sim.averagePrice,
-            slippage: sim.slippageDollars,
-          };
-        } else if (side === 'sell' && currentPrice <= order.stopPrice) {
-          const sim = this.bookEngine.simulateFill('sell', order.quantity - order.filledQuantity, depth);
-          return {
-            shouldFill: true,
-            fillPrice: sim.averagePrice,
-            slippage: sim.slippageDollars,
-          };
+        if (!order.stopTriggered) {
+          if (!(side === 'buy' ? currentPrice >= order.stopPrice : currentPrice <= order.stopPrice)) return null;
+          order.stopTriggered = true;
         }
-        return null;
+        break;
       }
 
       case 'stop_limit': {
@@ -181,49 +150,29 @@ export class OrderMatchingEngine {
           // Latch for the rest of the order's life; later prices cannot untrigger it.
           order.stopTriggered = true;
         }
-        // A triggered stop-limit rests as a plain limit order at its configured limit.
-        if (side === 'buy' && depth.bestAsk <= order.limitPrice) {
-          return {
-            shouldFill: true,
-            fillPrice: depth.bestAsk,
-            slippage: 0,
-          };
-        } else if (side === 'sell' && depth.bestBid >= order.limitPrice) {
-          return {
-            shouldFill: true,
-            fillPrice: depth.bestBid,
-            slippage: 0,
-          };
-        }
-        return null;
+        limitPrice = order.limitPrice;
+        break;
       }
 
       case 'trailing_stop': {
         if (!order.trailingAmount) return null;
+        if (order.stopTriggered) break;
         if (side === 'sell') {
           // Track peak price
           const peak = Math.max(order.highestPriceObserved || currentPrice, currentPrice);
           order.highestPriceObserved = peak;
           const stopLevel = peak - order.trailingAmount;
           if (currentPrice <= stopLevel) {
-            const sim = this.bookEngine.simulateFill('sell', order.quantity - order.filledQuantity, depth);
-            return {
-              shouldFill: true,
-              fillPrice: sim.averagePrice,
-              slippage: sim.slippageDollars,
-            };
+            order.stopTriggered = true;
+            break;
           }
         } else if (side === 'buy') {
           const trough = Math.min(order.lowestPriceObserved || currentPrice, currentPrice);
           order.lowestPriceObserved = trough;
           const stopLevel = trough + order.trailingAmount;
           if (currentPrice >= stopLevel) {
-            const sim = this.bookEngine.simulateFill('buy', order.quantity - order.filledQuantity, depth);
-            return {
-              shouldFill: true,
-              fillPrice: sim.averagePrice,
-              slippage: sim.slippageDollars,
-            };
+            order.stopTriggered = true;
+            break;
           }
         }
         return null;
@@ -232,5 +181,7 @@ export class OrderMatchingEngine {
       default:
         return null;
     }
+    const sim = this.bookEngine.simulateFill(side, order.quantity - order.filledQuantity, depth, limitPrice);
+    return sim.filledQuantity ? { shouldFill: true, fillPrice: sim.averagePrice, slippage: sim.slippageDollars, ...sim } : null;
   }
 }
