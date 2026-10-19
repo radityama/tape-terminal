@@ -114,9 +114,9 @@ test('v1 saves keep historical risk fields and wire values while restored equity
 
 test('legacy invalid pending orders remain recoverable but cannot fill after import', () => {
   const engine = new MarketSimulationEngine('G0_LEGACY_ORDER', 100000);
-  const placed = engine.placeOrder({ ticker: 'HLVG', side: 'buy', type: 'limit', quantity: 2, limitPrice: 100000 });
+  const placed = engine.placeOrder({ ticker: 'HLVG', side: 'buy', type: 'limit', quantity: 2, limitPrice: 180 });
   assert.equal(placed.success, true);
-  const second = engine.placeOrder({ ticker: 'VCRX', side: 'buy', type: 'stop_limit', quantity: 2, stopPrice: 1, limitPrice: 100000 });
+  const second = engine.placeOrder({ ticker: 'VCRX', side: 'buy', type: 'stop_limit', quantity: 2, stopPrice: 1, limitPrice: 180 });
   assert.equal(second.success, true);
   const wire = wireOf(makeSave(engine, 'G0_LEGACY_ORDER'));
   const orders = (wire as unknown as { game: { openOrders: Array<{ quantity: number; limitPrice?: string; status: string; filledQuantity: number }> } }).game.openOrders;
@@ -145,7 +145,7 @@ test('legacy invalid pending orders remain recoverable but cannot fill after imp
 test('a saved partial order retains its progress and only fills its residual quantity', () => {
   const engine = new MarketSimulationEngine('G0_SAVED_PARTIAL', 1000000);
   assert.equal(engine.placeOrder({ ticker: 'VCRX', side: 'buy', type: 'market', quantity: 997 }).success, true);
-  assert.equal(engine.placeOrder({ ticker: 'VCRX', side: 'buy', type: 'limit', quantity: 1000, limitPrice: 1000 }).success, true);
+  assert.equal(engine.placeOrder({ ticker: 'VCRX', side: 'buy', type: 'limit', quantity: 1000, limitPrice: 800 }).success, true);
   const wire = wireOf(makeSave(engine, 'G0_SAVED_PARTIAL'));
   const pending = (wire as unknown as { game: { openOrders: Array<{ status: string; filledQuantity: number; commissionPaid: string }> } }).game.openOrders[0];
   pending.status = 'partially_filled';
@@ -183,6 +183,26 @@ test('a saved short stays intact when shorting is locked and only covering can e
   assert.equal(restored.executeFill({ orderId: 'cover', ticker: 'HLVG', side: 'buy', shares: 4,
     price: 100, commission: 1.5, slippageDollars: 0, timestamp: 2000 }).success, true);
   assert.equal(restored.getPosition('HLVG')?.shares, 1);
+});
+
+test('v1 pending buy saves retain their wire format and reconstruct reservations on load', () => {
+  const engine = new MarketSimulationEngine('G2_SAVED_RESERVE', 1000);
+  assert.equal(engine.placeOrder({ ticker: 'HLVG', side: 'buy', type: 'limit', quantity: 5,
+    limitPrice: 180, timeInForce: 'GTC' }).success, true);
+  const wire = wireOf(makeSave(engine, 'G2_SAVED_RESERVE'));
+  const loaded = SaveGameSchema.decode(wire);
+  assert.deepEqual(wireOf(loaded), wire);
+  const restored = new MarketSimulationEngine(loaded.seed, 1000);
+  restored.importState(loaded.game);
+  assert.deepEqual(restored.exportState().portfolio, loaded.game.portfolio);
+  assert.deepEqual(restored.exportState().openOrders, loaded.game.openOrders);
+  assert.equal(restored.getSnapshot().riskMetrics.buyingPower, 98.5);
+  const before = restored.exportState();
+  assert.equal(restored.placeOrder({ ticker: 'VCRX', side: 'buy', type: 'limit', quantity: 1,
+    limitPrice: 180 }).success, false);
+  assert.deepEqual(restored.exportState(), before);
+  assert.equal(restored.cancelOrder(loaded.game.openOrders[0].id), true);
+  assert.equal(restored.getSnapshot().riskMetrics.buyingPower, 1000);
 });
 
 test('corrupted or tampered payloads are rejected without crashing', () => {

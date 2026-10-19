@@ -135,7 +135,7 @@ test('valid market and pending orders still execute and keep their quantities', 
 test('a restored partially filled order executes only its remaining shares', () => {
   const engine = new MarketSimulationEngine('G0_PARTIAL', 1000000);
   assert.equal(engine.placeOrder({ ticker: 'VCRX', side: 'buy', type: 'market', quantity: 997 }).success, true);
-  const placed = engine.placeOrder({ ticker: 'VCRX', side: 'buy', type: 'limit', quantity: 1000, limitPrice: 1000, takeProfitPrice: 3000, stopLossPrice: 1 });
+  const placed = engine.placeOrder({ ticker: 'VCRX', side: 'buy', type: 'limit', quantity: 1000, limitPrice: 800, takeProfitPrice: 3000, stopLossPrice: 1 });
   assert.equal(placed.success, true);
   const saved = engine.exportState();
   const pending = saved.openOrders.find((order) => order.id === placed.orderId)!;
@@ -383,6 +383,215 @@ test('automatic bracket exits cannot sell beyond a locked long position', () => 
   assert.equal(engine.exportState().portfolio.tradeHistory.length, after.portfolio.tradeHistory.length);
   assert.equal(engine.exportState().portfolio.positions.find((position) => position.ticker === 'HLVG')?.shares, 1);
   assert.equal(engine.exportState().openOrders.length, 2);
+});
+
+test('pending buys reserve cash across orders and cancellation releases it', () => {
+  const engine = new MarketSimulationEngine('G2_RESERVE', 1000);
+  const first = engine.placeOrder({ ticker: 'HLVG', side: 'buy', type: 'limit', quantity: 5, limitPrice: 180, timeInForce: 'GTC' });
+  assert.equal(first.success, true);
+  const before = engine.exportState();
+  assert.equal(engine.placeOrder({ ticker: 'HLVG', side: 'buy', type: 'limit', quantity: 5, limitPrice: 180 }).success, false);
+  assert.deepEqual(engine.exportState(), before, 'rejection cannot use RNG, seq or change orders');
+  assert.equal(engine.cancelOrder(first.orderId!), true);
+  assert.equal(engine.placeOrder({ ticker: 'HLVG', side: 'buy', type: 'limit', quantity: 5, limitPrice: 180 }).success, true);
+});
+
+test('an internal buy fill cannot overdraw cash, but covering a saved short is allowed', () => {
+  const portfolio = new PortfolioEngine(1000);
+  const fill = (side: 'buy' | 'sell', shares: number, price: number) => portfolio.executeFill({
+    orderId: `${side}_${shares}`, ticker: 'HLVG', side, shares, price,
+    commission: 1.5, slippageDollars: 0, timestamp: 1000,
+  });
+  const before = portfolio.exportState();
+  assert.equal(fill('buy', 10, 101).success, false);
+  assert.deepEqual(portfolio.exportState(), before);
+
+  const savedShort = new PortfolioEngine(1000, true, true);
+  assert.equal(savedShort.executeFill({ orderId: 'short', ticker: 'HLVG', side: 'sell', shares: 10,
+    price: 100, commission: 1.5, slippageDollars: 0, timestamp: 1000 }).success, true);
+  const saved = savedShort.exportState();
+  saved.marginUnlocked = false;
+  saved.shortingUnlocked = false;
+  portfolio.importState(saved);
+  assert.equal(fill('buy', 10, 500).success, true, 'closing a legacy short is permitted even when the cash balance becomes negative');
+  assert.equal(portfolio.getPosition('HLVG'), undefined);
+  const covered = portfolio.exportState();
+  assert.equal(fill('buy', 1, 100).success, false);
+  assert.deepEqual(portfolio.exportState(), covered);
+});
+
+test('same-tick legacy buys compete deterministically across tickers without overdrawing', () => {
+  const source = new MarketSimulationEngine('G2_SAME_TICK', 1000);
+  const first = source.placeOrder({ ticker: 'HLVG', side: 'buy', type: 'limit', quantity: 5, limitPrice: 180 });
+  assert.equal(first.success, true);
+  const state = source.exportState();
+  state.openOrders.push({ ...state.openOrders[0], id: 'legacy_vcrx', ticker: 'VCRX' });
+  const results = [];
+  for (let i = 0; i < 2; i++) {
+    const engine = new MarketSimulationEngine(state.seed, 1000);
+    engine.importState(state);
+    engine.tick(0.05);
+    const after = engine.exportState();
+    assert.equal(after.portfolio.positions.find((position) => position.ticker === 'HLVG')?.shares, 5);
+    assert.equal(after.portfolio.positions.find((position) => position.ticker === 'VCRX'), undefined);
+    assert.ok(Number(after.portfolio.cash) >= 0);
+    assert.deepEqual(after.openOrders.map((order) => order.id), ['legacy_vcrx']);
+    assert.equal(after.portfolio.tradeHistory.length, 1);
+    results.push([after.portfolio.cash, after.portfolio.positions.map(({ entryTimestamp, ...position }) => position),
+      after.openOrders, after.actionSeq, after.rngState]);
+  }
+  assert.deepEqual(results[0], results[1]);
+});
+
+test('own reservation is not charged again when a pending buy fills after a market buy', () => {
+  const engine = new MarketSimulationEngine('G2_OWN_RESERVE', 700);
+  assert.equal(engine.placeOrder({ ticker: 'HLVG', side: 'buy', type: 'limit', quantity: 3, limitPrice: 180 }).success, true);
+  assert.equal(engine.getSnapshot().riskMetrics.buyingPower, 158.5);
+  assert.equal(engine.placeOrder({ ticker: 'VCRX', side: 'buy', type: 'market', quantity: 1 }).success, true);
+  engine.tick(0.05);
+  const after = engine.exportState();
+  assert.equal(after.portfolio.positions.find((position) => position.ticker === 'HLVG')?.shares, 3);
+  assert.equal(after.portfolio.positions.find((position) => position.ticker === 'VCRX')?.shares, 1);
+  assert.ok(Number(after.portfolio.cash) >= 0);
+  assert.equal(after.openOrders.length, 0);
+});
+
+test('DAY expiry and GTC cancellation release derived reservations', () => {
+  const engine = new MarketSimulationEngine('G2_DAY_GTC', 2000);
+  const day = engine.placeOrder({ ticker: 'HLVG', side: 'buy', type: 'limit', quantity: 4, limitPrice: 180, timeInForce: 'DAY' });
+  const gtc = engine.placeOrder({ ticker: 'VCRX', side: 'buy', type: 'stop_limit', quantity: 4,
+    stopPrice: 1000, limitPrice: 180, timeInForce: 'GTC' });
+  assert.equal(day.success, true);
+  assert.equal(gtc.success, true);
+  assert.equal(engine.getSnapshot().riskMetrics.buyingPower, 557);
+  engine.skipToNextDay();
+  assert.deepEqual(engine.getSnapshot().openOrders.map((order) => order.id), [gtc.orderId]);
+  assert.equal(engine.getSnapshot().riskMetrics.buyingPower, 1278.5);
+  assert.equal(engine.cancelOrder(gtc.orderId!), true);
+  assert.equal(engine.getSnapshot().riskMetrics.buyingPower, 2000);
+});
+
+test('limit, stop-limit, stop and trailing buys share the same available capital', () => {
+  const engine = new MarketSimulationEngine('G2_ORDER_TYPES', 1000);
+  const orders = [
+    { ticker: 'HLVG', side: 'buy' as const, type: 'limit' as const, quantity: 1, limitPrice: 180 },
+    { ticker: 'VCRX', side: 'buy' as const, type: 'stop_limit' as const, quantity: 1, stopPrice: 300, limitPrice: 180 },
+    { ticker: 'HLVG', side: 'buy' as const, type: 'stop' as const, quantity: 1, stopPrice: 300 },
+    { ticker: 'VCRX', side: 'buy' as const, type: 'trailing_stop' as const, quantity: 1, trailingAmount: 300 },
+  ];
+  for (const order of orders) assert.equal(engine.placeOrder(order).success, true);
+  const before = engine.exportState();
+  assert.equal(engine.placeOrder({ ticker: 'HLVG', side: 'buy', type: 'limit', quantity: 3,
+    limitPrice: 180 }).success, false);
+  assert.deepEqual(engine.exportState(), before);
+  assert.equal(engine.getSnapshot().openOrders.length, 4);
+  assert.ok(engine.getSnapshot().riskMetrics.buyingPower > 0);
+  assert.ok(engine.getSnapshot().riskMetrics.buyingPower < 400);
+});
+
+test('a locked oversized bracket exit cannot consume cash or sell a negative position', () => {
+  const engine = new MarketSimulationEngine('G2_BRACKET', 1000);
+  assert.equal(engine.placeOrder({ ticker: 'HLVG', side: 'buy', type: 'market', quantity: 2,
+    takeProfitPrice: 1, stopLossPrice: 100000 }).success, true);
+  const held = engine.getSnapshot().positions.find((position) => position.ticker === 'HLVG')!.shares;
+  assert.equal(held, 2);
+  assert.equal(engine.placeOrder({ ticker: 'HLVG', side: 'sell', type: 'market', quantity: 1 }).success, true);
+  engine.tick(0.05);
+  const after = engine.exportState();
+  assert.equal(after.portfolio.positions.find((position) => position.ticker === 'HLVG')?.shares, 1);
+  assert.equal(after.portfolio.tradeHistory.length, 2);
+  assert.equal(after.openOrders.filter((order) => order.side === 'sell').length, 2);
+});
+
+test('restored partial buys reserve only their remaining shares', () => {
+  const engine = new MarketSimulationEngine('G2_PARTIAL', 500);
+  const placed = engine.placeOrder({ ticker: 'HLVG', side: 'buy', type: 'limit', quantity: 2, limitPrice: 180 });
+  assert.equal(placed.success, true);
+  const state = engine.exportState();
+  state.openOrders[0].status = 'partially_filled';
+  state.openOrders[0].filledQuantity = 1;
+  const restored = new MarketSimulationEngine(state.seed, 500);
+  restored.importState(state);
+  assert.equal(restored.getSnapshot().riskMetrics.buyingPower, 318.5);
+  assert.equal(restored.placeOrder({ ticker: 'VCRX', side: 'buy', type: 'limit', quantity: 1, limitPrice: 180 }).success, true);
+  assert.equal(restored.placeOrder({ ticker: 'VCRX', side: 'buy', type: 'limit', quantity: 1, limitPrice: 180 }).success, false);
+  restored.tick(0.05);
+  assert.equal(restored.exportState().portfolio.positions.find((position) => position.ticker === 'HLVG')?.shares, 1);
+  assert.equal(restored.exportState().openOrders.length, 0);
+});
+
+test('one short position cannot fund two independent covering orders', () => {
+  const engine = new MarketSimulationEngine('G2_SHORT_COVER_RESERVE', 100);
+  const short = new PortfolioEngine(100, false, true);
+  assert.equal(short.executeFill({ orderId: 'old_short', ticker: 'HLVG', side: 'sell', shares: 2,
+    price: 100, commission: 1.5, slippageDollars: 0, timestamp: 1000 }).success, true);
+  short.setUnlockedFeatures(false, false);
+  const state = engine.exportState();
+  state.portfolio = short.exportState();
+  state.portfolio.cash = '10';
+  engine.importState(state);
+  assert.equal(engine.placeOrder({ ticker: 'HLVG', side: 'buy', type: 'limit', quantity: 2, limitPrice: 180 }).success, true);
+  const before = engine.exportState();
+  assert.equal(engine.placeOrder({ ticker: 'HLVG', side: 'buy', type: 'limit', quantity: 1, limitPrice: 180 }).success, false);
+  assert.deepEqual(engine.exportState(), before);
+  assert.equal(engine.getSnapshot().riskMetrics.buyingPower, 0);
+});
+
+test('a buy stop gap stays pending with no fill mutation when its actual price is unaffordable', () => {
+  const engine = new MarketSimulationEngine('G2_GAP', 1000);
+  const placed = engine.placeOrder({ ticker: 'HLVG', side: 'buy', type: 'stop', quantity: 5, stopPrice: 200 });
+  assert.equal(placed.success, true);
+  const state = engine.exportState();
+  state.pricing.states.find((price) => price.ticker === 'HLVG')!.price = 300;
+  const restored = new MarketSimulationEngine(state.seed, 1000);
+  restored.importState(state);
+  const before = restored.exportState();
+  restored.tick(0.05);
+  const after = restored.exportState();
+  assert.deepEqual(after.portfolio, before.portfolio);
+  assert.deepEqual(after.openOrders, before.openOrders);
+  assert.equal(after.actionSeq, before.actionSeq);
+});
+
+test('cash accounts refuse leveraged buys while margin accounts allow only funded 2:1 exposure', () => {
+  const fill = (target: PortfolioEngine, shares: number) => target.executeFill({
+    orderId: `buy_${shares}`, ticker: 'HLVG', side: 'buy', shares, price: 150,
+    commission: 1.5, slippageDollars: 0, timestamp: 1000,
+  });
+  const cash = new PortfolioEngine(1000);
+  const before = cash.exportState();
+  assert.equal(fill(cash, 12).success, false);
+  assert.deepEqual(cash.exportState(), before);
+  const margin = new PortfolioEngine(1000, true, false);
+  assert.equal(fill(margin, 12).success, true);
+  assert.equal(margin.getCash(), -801.5);
+  const leveraged = margin.exportState();
+  assert.equal(fill(margin, 2).success, false);
+  assert.deepEqual(margin.exportState(), leveraged);
+});
+
+test('cash accounts cannot spend unsettled short proceeds on new long positions', () => {
+  const portfolio = new PortfolioEngine(1000, false, true);
+  assert.equal(portfolio.executeFill({ orderId: 'short', ticker: 'HLVG', side: 'sell', shares: 5,
+    price: 100, commission: 1.5, slippageDollars: 0, timestamp: 1000 }).success, true);
+  assert.equal(portfolio.getCash(), 1498.5);
+  assert.equal(portfolio.getBuyingPower(), 998.5);
+  const before = portfolio.exportState();
+  assert.equal(portfolio.executeFill({ orderId: 'long', ticker: 'VCRX', side: 'buy', shares: 10,
+    price: 120, commission: 1.5, slippageDollars: 0, timestamp: 2000 }).success, false);
+  assert.deepEqual(portfolio.exportState(), before);
+  assert.equal(portfolio.executeFill({ orderId: 'cover', ticker: 'HLVG', side: 'buy', shares: 5,
+    price: 100, commission: 1.5, slippageDollars: 0, timestamp: 2000 }).success, true);
+});
+
+test('margin short fills cannot exceed the same 2:1 buying-power limit as buys', () => {
+  const portfolio = new PortfolioEngine(1000, true, true);
+  const short = (shares: number) => portfolio.executeFill({ orderId: `short_${shares}`, ticker: 'HLVG',
+    side: 'sell', shares, price: 150, commission: 1.5, slippageDollars: 0, timestamp: 1000 });
+  assert.equal(short(12).success, true);
+  const before = portfolio.exportState();
+  assert.equal(short(2).success, false);
+  assert.deepEqual(portfolio.exportState(), before);
 });
 
 test('Margin cushion and forced liquidation trigger on maintenance breach', () => {

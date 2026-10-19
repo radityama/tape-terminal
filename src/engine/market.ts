@@ -247,14 +247,18 @@ export class MarketSimulationEngine {
       return { success: false, error: 'Order value is out of range.' };
     }
 
-    // Check buying power requirements
-    const risk = this.portfolioEngine.calculateRiskMetrics(COMPANY_MAP);
-    const requiredCapital = estFill.totalCost + commission;
+    // Limit prices cap the commitment; stops and market orders use the current quote.
+    const reservePrice = (params.type === 'limit' || params.type === 'stop_limit')
+      ? params.limitPrice! : estFill.averagePrice;
+    const coveredShares = new Map<string, number>();
+    const available = Math.max(0, this.portfolioEngine.getBuyingPower() - this.reservedBuyingPower(undefined, coveredShares));
+    const requiredCapital = params.side === 'buy'
+      ? this.buyCapital(params.ticker, params.quantity, reservePrice, coveredShares.get(params.ticker) ?? 0) : 0;
 
-    if (params.side === 'buy' && requiredCapital > risk.buyingPower) {
+    if (params.side === 'buy' && Math.round(requiredCapital * 100) > Math.round(available * 100)) {
       return {
         success: false,
-        error: `Insufficient buying power: need $${requiredCapital.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}, have $${risk.buyingPower.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}.`,
+        error: `Insufficient buying power: need $${requiredCapital.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}, have $${available.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}.`,
       };
     }
 
@@ -297,6 +301,32 @@ export class MarketSimulationEngine {
       return true;
     }
     return false;
+  }
+
+  private buyCapital(ticker: string, shares: number, price: number, coveredShares = 0): number {
+    const shortShares = Math.max(0, -(this.portfolioEngine.getPosition(ticker)?.shares ?? 0) - coveredShares);
+    const openingShares = Math.max(0, shares - shortShares);
+    if (!openingShares) return 0;
+    const fee = this.matchingEngine.calculateCommission(shares, price);
+    return Math.round((openingShares * price + fee * (this.portfolioEngine.isMarginUnlocked() ? 2 : 1)) * 100) / 100;
+  }
+
+  private reservedBuyingPower(before?: Order, coveredShares = new Map<string, number>()): number {
+    let reserved = 0;
+    for (const order of this.openOrders.values()) {
+      if (order === before) break;
+      if (order.side !== 'buy' || !isValidPendingOrder(order)
+        || (order.status !== 'pending' && order.status !== 'partially_filled')) continue;
+      const shares = order.quantity - order.filledQuantity;
+      const depth = this.depthCache.get(order.ticker);
+      if (!depth) continue;
+      const price = (order.type === 'limit' || order.type === 'stop_limit')
+        ? order.limitPrice! : this.bookEngine.simulateFill('buy', shares, depth).averagePrice;
+      const alreadyCovered = coveredShares.get(order.ticker) ?? 0;
+      reserved += this.buyCapital(order.ticker, shares, price, alreadyCovered);
+      coveredShares.set(order.ticker, alreadyCovered + shares);
+    }
+    return Math.round(reserved * 100) / 100;
   }
 
   // Step the simulation tick by deltaTimeSec
@@ -403,6 +433,13 @@ export class MarketSimulationEngine {
 
     const remainingShares = order.quantity - order.filledQuantity;
     const commission = this.matchingEngine.calculateCommission(remainingShares, fillResult.fillPrice);
+    if (order.side === 'buy') {
+      const coveredShares = new Map<string, number>();
+      const available = Math.max(0, this.portfolioEngine.getBuyingPower() - this.reservedBuyingPower(order, coveredShares));
+      if (Math.round(this.buyCapital(order.ticker, remainingShares, fillResult.fillPrice, coveredShares.get(order.ticker) ?? 0) * 100) > Math.round(available * 100)) {
+        return; // A gap or older reservation exhausted funds; keep the order pending for retry/cancellation.
+      }
+    }
     const fillRes = this.portfolioEngine.executeFill({
       orderId: order.id,
       ticker: order.ticker,
@@ -550,6 +587,7 @@ export class MarketSimulationEngine {
   getSnapshot(): MarketSnapshot {
     const priceMap = this.pricingEngine.getPriceMap();
     const risk = this.portfolioEngine.calculateRiskMetrics(COMPANY_MAP);
+    risk.buyingPower = Math.round(Math.max(0, risk.buyingPower - this.reservedBuyingPower()) * 100) / 100;
 
     // Compute TAPE50 index
     let totalCap = 0;
