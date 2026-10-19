@@ -404,6 +404,9 @@ export class MarketSimulationEngine {
 
     }
 
+    // Mark positions before matching so pending-order funding uses this tick's prices, not the previous mark.
+    this.portfolioEngine.updateMarketPrices(priceMap);
+
     for (const order of [...this.openOrders.values()].sort((a, b) => a.createdAt - b.createdAt)) {
       const depth = this.depthCache.get(order.ticker);
       const priceState = this.pricingEngine.getState(order.ticker);
@@ -411,9 +414,6 @@ export class MarketSimulationEngine {
         this.evaluateOrder(order, depth, priceState.price);
       }
     }
-
-    // Update mark-to-market prices on portfolio
-    this.portfolioEngine.updateMarketPrices(priceMap);
 
     // Check margin cushion and margin calls
     const risk = this.portfolioEngine.calculateRiskMetrics(COMPANY_MAP);

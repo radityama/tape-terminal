@@ -570,6 +570,29 @@ test('a buy stop gap stays pending with no fill mutation when its actual price i
   assert.equal(after.actionSeq, before.actionSeq);
 });
 
+test('pending fills use the current tick mark when another position moves', () => {
+  const source = new MarketSimulationEngine('G2_STALE_MARK', 1000);
+  const placed = source.placeOrder({ ticker: 'HLVG', side: 'buy', type: 'limit', quantity: 5, limitPrice: 180 });
+  assert.equal(placed.success, true);
+  const portfolio = new PortfolioEngine(1000, true, false);
+  assert.equal(portfolio.executeFill({ orderId: 'long', ticker: 'VCRX', side: 'buy', shares: 10,
+    price: 100, commission: 0, slippageDollars: 0, timestamp: 1000 }).success, true);
+  const state = source.exportState();
+  state.portfolio = portfolio.exportState();
+  state.pricing.states.find((price) => price.ticker === 'VCRX')!.price = 50;
+  const engine = new MarketSimulationEngine(state.seed, 1000);
+  engine.importState(state);
+  const before = engine.exportState();
+  engine.tick(0.05);
+  const after = engine.exportState();
+  assert.equal(after.portfolio.cash, before.portfolio.cash);
+  assert.equal(after.portfolio.tradeHistory.length, before.portfolio.tradeHistory.length);
+  assert.equal(after.portfolio.positions.find((position) => position.ticker === 'HLVG'), undefined,
+    'a falling VCRX mark leaves too little margin for the HLVG fill');
+  assert.ok(after.portfolio.positions.find((position) => position.ticker === 'VCRX')!.marketValue < 600);
+  assert.deepEqual(after.openOrders.map((order) => order.id), [placed.orderId]);
+});
+
 test('cash accounts refuse leveraged buys while margin accounts allow only funded 2:1 exposure', () => {
   const fill = (target: PortfolioEngine, shares: number) => target.executeFill({
     orderId: `buy_${shares}`, ticker: 'HLVG', side: 'buy', shares, price: 150,

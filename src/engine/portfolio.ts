@@ -118,8 +118,13 @@ export class PortfolioEngine {
       else shortValue += position.marketValue;
     }
     if (!this.marginUnlocked) return Math.round(Math.max(0, this.getCash() - shortValue) * 100) / 100;
-    const equity = Math.round((this.getCash() + longValue - shortValue) * 100) / 100;
-    return Math.round(Math.max(0, 2 * equity - longValue - shortValue) * 100) / 100;
+    return Math.round(Math.max(0, this.marginBuyingPower(this.getCash(), longValue, shortValue)) * 100) / 100;
+  }
+
+  // Shared by the displayed buying power and the pre-fill margin check so the two cannot diverge.
+  private marginBuyingPower(cash: number, longValue: number, shortValue: number): number {
+    const equity = Math.round((cash + longValue - shortValue) * 100) / 100;
+    return Math.round((2 * equity - longValue - shortValue) * 100) / 100;
   }
 
   isMarginUnlocked(): boolean {
@@ -234,7 +239,7 @@ export class PortfolioEngine {
         if (position.shares > 0) longValue += position.marketValue;
         else shortValue += position.marketValue;
       }
-      if (Math.round((2 * (cashAfter + longValue - shortValue) - longValue - shortValue) * 100) < 0) {
+      if (this.marginBuyingPower(cashAfter, longValue, shortValue) < 0) {
         return { success: false, error: 'Insufficient buying power.' };
       }
     }
