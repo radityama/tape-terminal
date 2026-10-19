@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { MarketSimulationEngine } from './market.ts';
 import { walkDepth, OrderBookDepth, OrderBookEngine } from './orderbook.ts';
 import { OrderMatchingEngine } from './matching.ts';
+import { PortfolioEngine } from './portfolio.ts';
 import { SeededRNG } from './rng.ts';
 
 test('G9 reproduction: a limit cannot fill more shares than the eligible visible asks', () => {
@@ -55,6 +56,33 @@ test('market orders compete for one book and cannot refresh liquidity by placing
     .reduce((sum, trade) => sum + trade.shares, 0), 10);
 });
 
+test('a market buy is admitted when only the first ask and its commission are affordable', () => {
+  const source = new MarketSimulationEngine('G9_FIRST_ASK', 100_000);
+  const book = source.getDepth('HLVG')!;
+  const quantity = book.asks.reduce((sum, level) => sum + level.size, 0);
+  const firstAsk = book.asks[0].price;
+  assert.ok(walkDepth('buy', quantity, book).averagePrice > firstAsk);
+  const saved = source.exportState();
+  saved.portfolio.cash = String(firstAsk + 1.5 + 0.01);
+  const engine = new MarketSimulationEngine(saved.seed);
+  engine.importState(saved);
+  const placed = engine.placeOrder({ ticker: 'HLVG', side: 'buy', type: 'market', quantity, timeInForce: 'GTC' });
+  assert.equal(placed.success, true);
+  assert.equal(engine.exportState().portfolio.tradeHistory[0].shares, 1);
+});
+
+test('the public depth quote and spread track committed level consumption', () => {
+  const engine = new MarketSimulationEngine('G9_BOOK_QUOTE', 10_000_000);
+  const firstAsk = engine.getDepth('HLVG')!.asks[0];
+  assert.equal(engine.placeOrder({ ticker: 'HLVG', side: 'buy', type: 'market', quantity: firstAsk.size }).success, true);
+  const book = engine.getDepth('HLVG')!;
+  assert.equal(book.asks[0].size, 0);
+  assert.equal(book.bestAsk, book.asks[1].price);
+  assert.equal(book.midPrice, Math.round((book.bestAsk + book.bestBid) / 2 * 100) / 100);
+  assert.equal(book.spread, Math.round((book.bestAsk - book.bestBid) * 100) / 100);
+  assert.equal(book.spreadBps, Math.round(book.spread / book.midPrice * 100000) / 10);
+});
+
 test('a live order accumulates its executed-share VWAP and fees over multiple ticks', () => {
   const engine = new MarketSimulationEngine('G9_VWAP', 1_000_000_000);
   const capacity = engine.getDepth('HLVG')!.asks.reduce((sum, level) => sum + level.size, 0);
@@ -69,7 +97,7 @@ test('a live order accumulates its executed-share VWAP and fees over multiple ti
   assert.equal(order.filledQuantity, fills.reduce((sum, trade) => sum + trade.shares, 0));
   assert.equal(order.averageFillPrice, Math.round(fills.reduce((value, trade) => value + trade.shares * trade.price, 0)
     / order.filledQuantity * 100) / 100);
-  assert.equal(order.commissionPaid, fills.reduce((sum, trade) => sum + trade.commission, 0));
+  assert.equal(order.commissionPaid, Math.round(fills.reduce((sum, trade) => sum + trade.commission, 0) * 100) / 100);
 });
 
 test('a legacy partial without prior VWAP does not average past shares against zero', () => {
@@ -188,7 +216,7 @@ test('a market buy can enter with funds for one share and cannot spend beyond th
   assert.ok(Number(state.portfolio.cash) >= 0);
 });
 
-test('failed funding and permission checks do not consume visible depth or charge fees', () => {
+test('failed funding consumes no depth, while locked oversize sells close only owned shares', () => {
   const source = new MarketSimulationEngine('G9_REJECT', 100_000);
   const pending = source.placeOrder({ ticker: 'HLVG', side: 'buy', type: 'limit', quantity: 10,
     limitPrice: 1000, timeInForce: 'GTC' });
@@ -205,11 +233,39 @@ test('failed funding and permission checks do not consume visible depth or charg
 
   const locked = new MarketSimulationEngine('G9_LOCKED_SELL', 100_000);
   assert.equal(locked.placeOrder({ ticker: 'HLVG', side: 'buy', type: 'market', quantity: 2 }).success, true);
+  const bids = locked.getDepth('HLVG')!.bids.reduce((sum, level) => sum + level.size, 0);
   const sell = locked.placeOrder({ ticker: 'HLVG', side: 'sell', type: 'market', quantity: 3 });
-  assert.equal(locked.exportState().portfolio.positions[0].shares, 2);
-  assert.equal(locked.exportState().portfolio.tradeHistory.filter((trade) => trade.side === 'sell').length, 0);
-  assert.equal(locked.getDepth('HLVG')!.bids.reduce((sum, level) => sum + level.size, 0) > 0, true);
+  assert.equal(locked.exportState().portfolio.positions.length, 0);
+  assert.equal(locked.exportState().portfolio.tradeHistory.filter((trade) => trade.side === 'sell')[0].shares, 2);
+  assert.equal(locked.exportState().openOrders.find((order) => order.id === sell.orderId)?.filledQuantity, 2);
+  assert.equal(locked.getDepth('HLVG')!.bids.reduce((sum, level) => sum + level.size, 0), bids - 2);
   assert.equal(sell.success, true);
+});
+
+test('cancelling one exit of a partially filled parent cannot recreate it after reload', () => {
+  const engine = new MarketSimulationEngine('G9_CANCEL_CHILD', 100_000_000);
+  const visible = engine.getDepth('HLVG')!.asks.reduce((sum, level) => sum + level.size, 0);
+  const parent = engine.placeOrder({ ticker: 'HLVG', side: 'buy', type: 'market', quantity: visible + 5,
+    timeInForce: 'GTC', takeProfitPrice: 1000000, stopLossPrice: 0.01 });
+  assert.equal(parent.success, true);
+  assert.equal(engine.cancelOrder(`${parent.orderId}_tp`), true);
+  const saved = engine.exportState();
+  assert.equal(saved.openOrders.find((order) => order.id === parent.orderId)?.takeProfitPrice, undefined);
+  const restored = new MarketSimulationEngine(saved.seed);
+  restored.importState(saved);
+  restored.tick(0.05);
+  const after = restored.exportState();
+  assert.equal(after.openOrders.some((order) => order.id === `${parent.orderId}_tp`), false);
+  assert.equal(after.openOrders.find((order) => order.id === `${parent.orderId}_sl`)?.quantity, visible + 5);
+});
+
+test('stop metadata is validated independently of the partial fill quantity', () => {
+  const portfolio = new PortfolioEngine(1000);
+  const fill = { orderId: 'legacy_stop', ticker: 'HLVG', side: 'buy' as const,
+    shares: 100, price: 1, commission: 1.5, slippageDollars: 0, timestamp: 1, initialStopPrice: 1e12 };
+  assert.equal(portfolio.checkFill(fill), null);
+  assert.equal(portfolio.executeFill(fill).success, true);
+  assert.equal(portfolio.getPosition('HLVG')?.initialStopPrice, 1e12);
 });
 
 test('each partial parent fill adds only new exposure to its linked exits', () => {

@@ -257,7 +257,7 @@ export class MarketSimulationEngine {
 
     // Limit prices cap the commitment; stops and market orders use the current quote.
     const reservePrice = (params.type === 'limit' || params.type === 'stop_limit')
-      ? params.limitPrice! : quote;
+      ? params.limitPrice! : params.type === 'market' ? estFill.basePrice : quote;
     const coveredShares = new Map<string, number>();
     const available = Math.max(0, this.portfolioEngine.getBuyingPower() - this.reservedBuyingPower(undefined, coveredShares));
     const requiredCapital = params.side === 'buy'
@@ -310,6 +310,14 @@ export class MarketSimulationEngine {
       child.isBracketChild && child.parentOrderId === orderId
       && (!order || child.ticker === order.ticker) && this.isLiveOrder(child));
     if (!parentIsLive && children.length === 0) return false;
+
+    if (parentIsLive && order.isBracketChild && order.parentOrderId) {
+      const parent = this.openOrders.get(order.parentOrderId);
+      if (parent && this.isLiveOrder(parent) && parent.ticker === order.ticker) {
+        if (order.id === `${parent.id}_tp`) parent.takeProfitPrice = undefined;
+        if (order.id === `${parent.id}_sl`) parent.stopLossPrice = undefined;
+      }
+    }
 
     for (const child of children) this.cancelOpenOrder(child);
     if (parentIsLive) this.cancelOpenOrder(order);
@@ -519,8 +527,9 @@ export class MarketSimulationEngine {
 
     let fill = fillResult;
     let shares = fill.filledQuantity;
-    if (order.side === 'sell' && !this.portfolioEngine.exportState().shortingUnlocked
-      && remainingShares > Math.max(0, this.portfolioEngine.getPosition(order.ticker)?.shares ?? 0)) return;
+    if (order.side === 'sell' && !this.portfolioEngine.isShortingUnlocked()) {
+      shares = Math.min(shares, Math.max(0, this.portfolioEngine.getPosition(order.ticker)?.shares ?? 0));
+    }
     const coveredShares = new Map<string, number>();
     const available = order.side === 'buy'
       ? Math.max(0, this.portfolioEngine.getBuyingPower() - this.reservedBuyingPower(order, coveredShares)) : 0;
@@ -587,13 +596,16 @@ export class MarketSimulationEngine {
       }
       depth.bestAsk = depth.asks.find((level) => level.size > 0)?.price ?? depth.asks.at(-1)!.price;
       depth.bestBid = depth.bids.find((level) => level.size > 0)?.price ?? depth.bids.at(-1)!.price;
+      depth.midPrice = Math.round((depth.bestAsk + depth.bestBid) / 2 * 100) / 100;
+      depth.spread = Math.round((depth.bestAsk - depth.bestBid) * 100) / 100;
+      depth.spreadBps = Math.round(depth.spread / depth.midPrice * 100000) / 10;
       const previous = order.filledQuantity;
       order.filledQuantity += shares;
       order.status = order.filledQuantity === order.quantity ? 'filled' : 'partially_filled';
       if (order.status === 'filled') order.filledAt = Date.now();
       order.averageFillPrice = Math.round(((order.averageFillPrice ?? fill.averagePrice) * previous + fill.averagePrice * shares)
         / order.filledQuantity * 100) / 100;
-      order.commissionPaid += commission;
+      order.commissionPaid = Math.round((order.commissionPaid + commission) * 100) / 100;
       if (order.status === 'filled') this.openOrders.delete(order.id);
       this.actionSeq += 1;
 

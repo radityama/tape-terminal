@@ -131,6 +131,10 @@ export class PortfolioEngine {
     return this.marginUnlocked;
   }
 
+  isShortingUnlocked(): boolean {
+    return this.shortingUnlocked;
+  }
+
   getStartingCapital(): number {
     return this.startingCapital.toNumber();
   }
@@ -368,7 +372,7 @@ export class PortfolioEngine {
     if (!validOrderValue(shares, price)
       || !Number.isFinite(commission) || commission < 0 || !Number.isSafeInteger(Math.round(commission * 100))
       || !Number.isFinite(slippageDollars) || slippageDollars < 0 || !Number.isSafeInteger(Math.round(slippageDollars * 100))
-      || (initialStopPrice !== undefined && !validOrderValue(shares, initialStopPrice))) {
+      || (initialStopPrice !== undefined && !validOrderValue(1, initialStopPrice))) {
       return 'Invalid fill quantity or price.';
     }
     const existing = this.positions.get(ticker);

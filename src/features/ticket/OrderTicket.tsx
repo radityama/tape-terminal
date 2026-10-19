@@ -70,9 +70,10 @@ export function OrderTicket() {
 
     // Commission
     const feeModel = EquityAssetClass.feeModel;
-    const rawComm = feeModel.basePerTrade + estimatedShares * feeModel.perUnitFee
-      + estimatedShares * estFillPrice * feeModel.percentageFee;
-    const estCommission = estimatedShares ? Math.max(feeModel.minimumFee, Math.round(rawComm * 100) / 100) : 0;
+    const feeAt = (shares: number, price: number) => Math.max(feeModel.minimumFee,
+      Math.round((feeModel.basePerTrade + shares * feeModel.perUnitFee
+        + shares * price * feeModel.percentageFee) * 100) / 100);
+    const estCommission = estimatedShares ? feeAt(estimatedShares, estFillPrice) : 0;
 
     const totalTradeCost = Math.round((estimatedShares * estFillPrice + estCommission) * 100) / 100;
     const currentEquity = risk?.netLiquidationValue ?? 100000;
@@ -83,6 +84,9 @@ export function OrderTicket() {
     const resultingBuyingPower = Math.max(0, currentBuyingPower - totalTradeCost);
     const positionFraction = currentEquity > 0 ? (Math.max(totalTradeCost, qty * (limit ?? basePrice) + feeModel.minimumFee) / currentEquity) * 100 : 0;
     const isLargeOrder = positionFraction >= 25;
+    const commitmentShares = orderType === 'market' ? 1 : qty;
+    const commitmentPrice = orderType === 'market' ? basePrice : limit ?? basePrice;
+    const commitmentFee = feeAt(commitmentShares, commitmentPrice) * (isMarginUnlocked ? 2 : 1);
 
     return {
       estFillPrice,
@@ -95,11 +99,10 @@ export function OrderTicket() {
       resultingBuyingPower,
       positionFraction,
       isLargeOrder,
-      hasSufficientBuyingPower: activeSide === 'sell' || (orderType === 'market'
-        ? currentBuyingPower >= basePrice + feeModel.minimumFee
-        : qty * (limit ?? basePrice) + feeModel.minimumFee <= currentBuyingPower),
+      hasSufficientBuyingPower: activeSide === 'sell' || (heldShares < 0 && qty <= -heldShares)
+        || commitmentShares * commitmentPrice + commitmentFee <= currentBuyingPower,
     };
-  }, [orderQuantity, activeSide, orderType, limitPrice, currentPrice, depth, risk]);
+  }, [orderQuantity, activeSide, orderType, limitPrice, currentPrice, depth, risk, isMarginUnlocked, heldShares]);
 
   const handleQuickQty = (percent: number) => {
     if (activeSide === 'sell' && !isShortUnlocked) {

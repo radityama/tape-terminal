@@ -730,7 +730,7 @@ test('career objectives award reputation once and unlock Junior Trader determini
   assert.equal(restored.getSnapshot().career.rank.order, 2);
 });
 
-test('a rejected locked sell cannot award reputation or mutate career progress', () => {
+test('an oversized locked sell closes owned shares but never opens a short or awards unearned reputation', () => {
   const engine = new MarketSimulationEngine('G4_REJECTED_SELL', 140000);
   assert.equal(engine.placeOrder({
     ticker: 'HLVG', side: 'buy', type: 'market', quantity: 1, stopLossPrice: 0.01, timeInForce: 'GTC',
@@ -743,8 +743,13 @@ test('a rejected locked sell cannot award reputation or mutate career progress',
 
   const after = engine.exportState();
   assert.equal(after.career.reputation, before.career.reputation);
-  assert.deepEqual(after.career.objectives, before.career.objectives);
-  assert.equal(after.portfolio.tradeHistory.length, 1, 'a refused fill leaves no trade record');
+  assert.equal(after.career.objectives.find((objective) => objective.id === 'obj_1_3')?.progressText, '0 of 3 sectors held');
+  assert.equal(after.portfolio.tradeHistory.length, 2);
+  assert.equal(after.portfolio.tradeHistory[0].shares, 1);
+  assert.equal(after.portfolio.positions.find((position) => position.ticker === 'HLVG'), undefined);
+  assert.equal(after.openOrders.find((order) => order.side === 'sell')?.filledQuantity, 1);
+  engine.tick(0.05);
+  assert.equal(engine.exportState().portfolio.tradeHistory.length, 2, 'the remainder cannot open a locked short');
 });
 
 test('held scheduled earnings are recorded before the next day starts', () => {
