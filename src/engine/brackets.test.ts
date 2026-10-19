@@ -276,7 +276,7 @@ test('an oversize linked exit is rejected without opening a short or charging co
   assert.equal(restored.exportState().portfolio.cash, after.portfolio.cash);
 });
 
-test('a linked cover exit that cannot be funded is removed instead of retrying', () => {
+test('an oversize linked cover exit is removed without cash, position or commission mutation', () => {
   const engine = new MarketSimulationEngine('G5_FUNDING_REJECT', 100000);
   unlockShorting(engine);
   const entry = engine.placeOrder({
@@ -304,6 +304,43 @@ test('a linked cover exit that cannot be funded is removed instead of retrying',
     before.portfolio.positions.map((position) => [position.ticker, position.shares]));
   assert.equal(after.portfolio.tradeHistory.length, before.portfolio.tradeHistory.length);
   assert.deepEqual(after.openOrders.map((order) => [order.id, order.quantity]), [[`${entry.orderId}_sl`, 1]]);
+});
+
+test('margin liquidation cancels linked exits for the liquidated position', () => {
+  const engine = new MarketSimulationEngine('G5_LIQUIDATION', 100000);
+  const state = engine.exportState();
+  const mark = state.pricing.states.find((price) => price.ticker === 'HLVG')!.price;
+
+  state.portfolio.marginUnlocked = true;
+  state.portfolio.shortingUnlocked = true;
+  state.portfolio.cash = '-200000';
+  state.portfolio.dayStartEquity = '-50000';
+  state.portfolio.peakEquity = '1000';
+  state.portfolio.positions = [{
+    ticker: 'HLVG', shares: 1000, averageEntryPrice: 100, currentPrice: mark,
+    marketValue: 1000 * mark, costBasis: 100000, unrealizedPnl: 1000 * mark - 100000,
+    unrealizedPnlPercent: ((mark - 100) / 100) * 100, entryTimestamp: 1, borrowFeeAccumulated: 0,
+  }];
+  state.openOrders = [
+    {
+      id: 'liq_tp', ticker: 'HLVG', side: 'sell', type: 'limit', quantity: 1000, filledQuantity: 0,
+      limitPrice: 1000000, timeInForce: 'GTC', status: 'pending', createdAt: 1, commissionPaid: 0,
+      parentOrderId: 'liq_parent', isBracketChild: true,
+    },
+    {
+      id: 'liq_sl', ticker: 'HLVG', side: 'sell', type: 'stop', quantity: 1000, filledQuantity: 0,
+      stopPrice: 0.01, timeInForce: 'GTC', status: 'pending', createdAt: 1, commissionPaid: 0,
+      parentOrderId: 'liq_parent', isBracketChild: true,
+    },
+  ];
+  engine.importState(state);
+
+  engine.tick(0.05);
+
+  const after = engine.exportState();
+  assert.equal(after.portfolio.positions.find((position) => position.ticker === 'HLVG'), undefined);
+  assert.equal(after.openOrders.length, 0, 'liquidation reclaims the linked exits');
+  assert.equal(after.portfolio.tradeHistory.length, 1, 'one forced liquidation, no exit retry');
 });
 
 test('save and reload reconstruct explicit linked exits and their OCO behavior', () => {
@@ -362,21 +399,29 @@ test('legacy unlinked exits stay independent and malformed rows remain cancellab
   assert.equal(restored.exportState().openOrders.length, 0);
 });
 
-test('cancelling a linked buy exit releases its buying-power reservation', () => {
-  const engine = new MarketSimulationEngine('G5_RESERVATION', 100000);
-  const state = engine.exportState();
-  const child: Order = {
-    id: 'legacy_linked_buy', ticker: 'VCRX', side: 'buy', type: 'limit', quantity: 2,
-    filledQuantity: 0, limitPrice: 180, timeInForce: 'GTC', status: 'pending',
-    createdAt: 1, commissionPaid: 0, parentOrderId: 'legacy_parent', isBracketChild: true,
-  };
-  state.openOrders.push(child);
-  engine.importState(state);
+test('short bracket exit pairs do not reserve duplicate buying power', () => {
+  const withBrackets = new MarketSimulationEngine('G5_RESERVATION', 100000);
+  unlockShorting(withBrackets);
+  const withoutBrackets = new MarketSimulationEngine('G5_RESERVATION', 100000);
+  unlockShorting(withoutBrackets);
 
-  const before = engine.getSnapshot().riskMetrics.buyingPower;
-  assert.equal(engine.cancelOrder(child.id), true);
-  const after = engine.getSnapshot().riskMetrics.buyingPower;
-  assert.ok(after >= before + 360, `released ${after - before} of reserved capital`);
+  assert.equal(withBrackets.placeOrder({
+    ticker: 'HLVG', side: 'sell', type: 'market', quantity: 2,
+    takeProfitPrice: 1000000, stopLossPrice: 1000000,
+  }).success, true);
+  assert.equal(withoutBrackets.placeOrder({
+    ticker: 'HLVG', side: 'sell', type: 'market', quantity: 2,
+  }).success, true);
+
+  const bracketedPower = withBrackets.getSnapshot().riskMetrics.buyingPower;
+  assert.equal(bracketedPower, withoutBrackets.getSnapshot().riskMetrics.buyingPower,
+    'the two OCO cover legs reserve the same capital as no exits at all');
+
+  const exits = openExits(withBrackets);
+  assert.equal(exits.length, 2);
+  assert.equal(withBrackets.cancelOrder(exits[0].id), true);
+  assert.equal(withBrackets.getSnapshot().riskMetrics.buyingPower, bracketedPower,
+    'cancelling one leg does not change a zero-cover reservation');
 });
 
 test('the exit that closes the position is charged commission exactly once', () => {

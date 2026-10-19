@@ -66,11 +66,12 @@ test.describe('bracket orders', () => {
     await expect(dock(page).locator('tbody tr')).toHaveCount(2);
   });
 
-  test('a filled take-profit cancels its stop-loss sibling instead of reversing the position', async ({ page }) => {
+  test('take-profit and stop-loss eligible on one tick execute once and cancel the sibling', async ({ page }) => {
     await startCareer(page);
-    // Skipping the tutorial leaves the simulation paused; run the clock for the exit to trigger.
+    // Skipping the tutorial leaves the simulation paused; run the clock for the exits to trigger.
     await page.getByRole('button', { name: 'Normal speed' }).click();
-    await placeBracketBuy(page, '0.01', '0.01');
+    // Both legs are eligible on the next tick: the limit is below market and the stop is above it.
+    await placeBracketBuy(page, '0.01', '1000000');
 
     await expect(dock(page).getByRole('button', { name: /Positions \(0\)/ })).toBeVisible({ timeout: 20_000 });
     await expect(dock(page).getByRole('button', { name: /Orders \(0\)/ })).toBeVisible();

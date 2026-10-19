@@ -342,6 +342,10 @@ export class MarketSimulationEngine {
       if (order === before) break;
       if (order.side !== 'buy' || !isValidPendingOrder(order)
         || (order.status !== 'pending' && order.status !== 'partially_filled')) continue;
+      // Buy bracket children only cover a short opened by their parent. A pure cover is
+      // always permitted and the two OCO legs must not reserve capital twice. A stale
+      // child that would open exposure is rejected by the fill-boundary position check.
+      if (order.isBracketChild) continue;
       const shares = order.quantity - order.filledQuantity;
       const depth = this.depthCache.get(order.ticker);
       if (!depth) continue;
@@ -446,6 +450,11 @@ export class MarketSimulationEngine {
     const risk = this.portfolioEngine.calculateRiskMetrics(COMPANY_MAP);
     if (risk.isMarginBreached) {
       const liq = this.portfolioEngine.liquidateLargestLoser(priceMap, Date.now());
+      if (liq) {
+        // Liquidation closes the position outside the matching loop, so linked exits
+        // must be reclaimed here or they could close a position reopened later.
+        this.reconcileBracketOrders(liq.liquidatedTicker);
+      }
       if (liq && this.onMarginCallCallback) {
         this.onMarginCallCallback(liq.explanation);
       }
