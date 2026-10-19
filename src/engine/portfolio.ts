@@ -181,8 +181,8 @@ export class PortfolioEngine {
     const existing = this.positions.get(ticker);
     const notional = shares * price;
 
-    // Check permissions
-    if (!existing && side === 'sell' && !this.shortingUnlocked) {
+    // A sell cannot exceed the long shares available while shorting is locked.
+    if (side === 'sell' && !this.shortingUnlocked && shares > Math.max(existing?.shares ?? 0, 0)) {
       return { success: false, error: 'Short selling unlocks at Rank 2 (Junior Trader).' };
     }
 
