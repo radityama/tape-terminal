@@ -205,6 +205,37 @@ test('v1 pending buy saves retain their wire format and reconstruct reservations
   assert.equal(restored.getSnapshot().riskMetrics.buyingPower, 1000);
 });
 
+test('career progress tracking round trips and old saves load without invented completions', () => {
+  const engine = new MarketSimulationEngine('G4_SAVE_TRACKING', 140000);
+  const state = engine.exportState();
+  state.career.protectedOrderIds = ['ord_1', 'ord_2'];
+  state.career.earningsHeldTickers = ['HLVG'];
+  engine.importState(state);
+
+  const wire = wireOf(makeSave(engine, 'G4_SAVE_TRACKING'));
+  const decoded = SaveGameSchema.decode(wire);
+  assert.deepEqual(wireOf(decoded), wire);
+  assert.equal(decoded.game.career.objectiveWeek, 1);
+  assert.deepEqual(decoded.game.career.protectedOrderIds, ['ord_1', 'ord_2']);
+  assert.deepEqual(decoded.game.career.earningsHeldTickers, ['HLVG']);
+  assert.ok(decoded.game.career.objectives.every((objective) => !objective.completed));
+
+  // A v1 save written before G4 has none of the three tracking fields.
+  const oldWire = structuredClone(wire);
+  delete oldWire.game.career.objectiveWeek;
+  delete oldWire.game.career.protectedOrderIds;
+  delete oldWire.game.career.earningsHeldTickers;
+  const oldDecoded = SaveGameSchema.decode(oldWire);
+  assert.deepEqual(wireOf(oldDecoded), oldWire, 'loading an old save must not invent tracking fields');
+
+  const restored = new MarketSimulationEngine(oldDecoded.seed, 140000);
+  restored.importState(oldDecoded.game);
+  const career = restored.exportState().career;
+  assert.equal(career.reputation, 0);
+  assert.equal(career.currentRankIndex, 0);
+  assert.ok(career.objectives.every((objective) => !objective.completed));
+});
+
 test('corrupted or tampered payloads are rejected without crashing', () => {
   const engine = new MarketSimulationEngine('CORRUPT', 100000);
   for (let i = 0; i < 5; i++) engine.tick(100);

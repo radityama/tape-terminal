@@ -121,6 +121,10 @@ export interface CareerEngineState {
   riskBreaches: number;
   objectives: WeeklyObjective[];
   achievements: Achievement[];
+  // Optional for backward compatibility: v1 saves written before G4 do not carry these fields.
+  objectiveWeek?: number;
+  protectedOrderIds?: string[];
+  earningsHeldTickers?: string[];
 }
 
 export class CareerEngine {
@@ -129,6 +133,9 @@ export class CareerEngine {
   private riskBreaches: number = 0;
   private objectives: WeeklyObjective[];
   private achievements: Achievement[];
+  private objectiveWeek: number = 1;
+  private protectedOrderIds: string[] = [];
+  private earningsHeldTickers: string[] = [];
 
   constructor() {
     this.objectives = this.generateObjectivesForWeek(1);
@@ -142,6 +149,9 @@ export class CareerEngine {
       riskBreaches: this.riskBreaches,
       objectives: this.objectives.map((o) => ({ ...o })),
       achievements: this.achievements.map((a) => ({ ...a })),
+      objectiveWeek: this.objectiveWeek,
+      protectedOrderIds: [...this.protectedOrderIds],
+      earningsHeldTickers: [...this.earningsHeldTickers],
     };
   }
 
@@ -151,6 +161,71 @@ export class CareerEngine {
     this.riskBreaches = state.riskBreaches;
     this.objectives = state.objectives.map((o) => ({ ...o }));
     this.achievements = state.achievements.map((a) => ({ ...a }));
+    // Older saves only carry objective ids, which already encode the week.
+    const weekFromId = Number(state.objectives[0]?.id.match(/^obj_(\d+)_/)?.[1]);
+    this.objectiveWeek = state.objectiveWeek ?? (Number.isFinite(weekFromId) && weekFromId > 0 ? weekFromId : 1);
+    this.protectedOrderIds = [...(state.protectedOrderIds ?? [])];
+    this.earningsHeldTickers = [...(state.earningsHeldTickers ?? [])];
+  }
+
+  /** Rotate to the current five-day week without touching rank, reputation or achievements. */
+  syncObjectives(simDay: number) {
+    const week = Math.floor(Math.max(0, simDay - 1) / 5) + 1;
+    if (week <= this.objectiveWeek) return;
+    this.objectiveWeek = week;
+    this.protectedOrderIds = [];
+    this.earningsHeldTickers = [];
+    this.objectives = this.generateObjectivesForWeek(week);
+  }
+
+  private completeObjective(kind: 1 | 2 | 3, progressText: string): boolean {
+    const objective = this.objectives.find((o) => o.id.endsWith(`_${kind}`));
+    if (!objective || objective.completed) return false;
+    objective.completed = true;
+    objective.progressText = progressText;
+    this.addReputation(objective.reputationReward);
+    return true;
+  }
+
+  markEarningsHeld(tickers: string[]) {
+    for (const ticker of tickers) {
+      if (!this.earningsHeldTickers.includes(ticker)) this.earningsHeldTickers.push(ticker);
+    }
+    const objective = this.objectives.find((o) => o.id.endsWith('_2'));
+    if (objective && !objective.completed && this.earningsHeldTickers.length > 0) {
+      objective.progressText = 'Held through earnings; awaiting profitable close';
+    }
+  }
+
+  recordFill(event: {
+    orderId: string;
+    ticker: string;
+    realizedPnl?: number;
+    isClosingTrade: boolean;
+    stopProtected: boolean;
+    sectors: string[];
+  }) {
+    if (event.stopProtected && this.protectedOrderIds.length < 3
+      && !this.protectedOrderIds.includes(event.orderId)) {
+      this.protectedOrderIds.push(event.orderId);
+    }
+    const protectedCount = Math.min(3, this.protectedOrderIds.length);
+    const stopObjective = this.objectives.find((o) => o.id.endsWith('_1'));
+    if (stopObjective && !stopObjective.completed) {
+      stopObjective.progressText = `${protectedCount} of 3 stop orders set`;
+      if (protectedCount >= 3) this.completeObjective(1, `${protectedCount} of 3 stop orders set`);
+    }
+
+    if (event.isClosingTrade && (event.realizedPnl ?? 0) > 0 && this.earningsHeldTickers.includes(event.ticker)) {
+      this.completeObjective(2, '1 of 1 earnings trades completed');
+    }
+
+    const sectorCount = new Set(event.sectors).size;
+    const sectorObjective = this.objectives.find((o) => o.id.endsWith('_3'));
+    if (sectorObjective && !sectorObjective.completed) {
+      sectorObjective.progressText = `${Math.min(3, sectorCount)} of 3 sectors held`;
+      if (sectorCount >= 3) this.completeObjective(3, `${Math.min(3, sectorCount)} of 3 sectors held`);
+    }
   }
 
   getCurrentRank(): CareerRankDefinition {

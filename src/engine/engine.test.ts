@@ -671,6 +671,117 @@ test('filled positions are re-marked at the current market price after matching'
   assert.equal(position.marketValue, Math.round(position.shares * mark * 100) / 100);
 });
 
+test('career objectives award reputation once and unlock Junior Trader deterministically', () => {
+  const engine = new MarketSimulationEngine('G4_CAREER_PATH', 140000);
+  assert.equal(engine.placeOrder({
+    ticker: 'HLVG', side: 'buy', type: 'market', quantity: 1, stopLossPrice: 0.01, timeInForce: 'GTC',
+  }).success, true);
+  let career = engine.exportState().career;
+  assert.equal(career.reputation, 0);
+  assert.equal(career.objectives.find((o) => o.id.endsWith('_1'))?.progressText, '1 of 3 stop orders set');
+  assert.equal(career.objectives.find((o) => o.id.endsWith('_3'))?.progressText, '1 of 3 sectors held');
+
+  for (const ticker of ['BWTR', 'KNRG']) {
+    assert.equal(engine.placeOrder({
+      ticker, side: 'buy', type: 'market', quantity: 1, stopLossPrice: 0.01, timeInForce: 'GTC',
+    }).success, true);
+  }
+
+  career = engine.exportState().career;
+  assert.equal(career.reputation, 75, 'three protected trades and three sectors each award once');
+  assert.equal(career.objectives.find((o) => o.id.endsWith('_1'))?.completed, true);
+  assert.equal(career.objectives.find((o) => o.id.endsWith('_3'))?.completed, true);
+
+  // A saved position held through earnings closes profitably.
+  const state = engine.exportState();
+  state.career.earningsHeldTickers = ['HLVG'];
+  const held = state.portfolio.positions.find((p) => p.ticker === 'HLVG')!;
+  held.averageEntryPrice = 0.01;
+  held.costBasis = 0.01;
+  engine.importState(state);
+  assert.equal(engine.placeOrder({ ticker: 'HLVG', side: 'sell', type: 'market', quantity: 1 }).success, true);
+
+  career = engine.exportState().career;
+  assert.equal(career.reputation, 125, 'the earnings objective awards its defined 50 points once');
+  assert.ok(career.objectives.every((o) => o.completed));
+
+  engine.tick(0.05);
+  const snapshot = engine.getSnapshot();
+  assert.equal(snapshot.career.rank.order, 2, 'equity and reputation promote the player');
+  assert.equal(snapshot.career.nextRank.order, 3);
+  assert.equal(engine.exportState().portfolio.shortingUnlocked, true);
+  assert.equal(engine.exportState().portfolio.marginUnlocked, false);
+
+  engine.tick(0.05);
+  assert.equal(engine.getSnapshot().career.reputation, 125, 'repeat ticks must not farm the same objective');
+
+  const restored = new MarketSimulationEngine(state.seed, 140000);
+  restored.importState(engine.exportState());
+  restored.tick(0.05);
+  assert.equal(restored.getSnapshot().career.reputation, 125, 'reloads must not re-award completed objectives');
+  assert.equal(restored.getSnapshot().career.rank.order, 2);
+});
+
+test('a rejected locked sell cannot award reputation or mutate career progress', () => {
+  const engine = new MarketSimulationEngine('G4_REJECTED_SELL', 140000);
+  assert.equal(engine.placeOrder({
+    ticker: 'HLVG', side: 'buy', type: 'market', quantity: 1, stopLossPrice: 0.01, timeInForce: 'GTC',
+  }).success, true);
+  const before = engine.exportState();
+  assert.equal(before.portfolio.tradeHistory.length, 1);
+
+  assert.equal(engine.placeOrder({ ticker: 'HLVG', side: 'sell', type: 'market', quantity: 2 }).success, true);
+  engine.tick(0.05);
+
+  const after = engine.exportState();
+  assert.equal(after.career.reputation, before.career.reputation);
+  assert.deepEqual(after.career.objectives, before.career.objectives);
+  assert.equal(after.portfolio.tradeHistory.length, 1, 'a refused fill leaves no trade record');
+});
+
+test('held scheduled earnings are recorded before the next day starts', () => {
+  const engine = new MarketSimulationEngine('G4_EARNINGS_HELD', 140000);
+  assert.equal(engine.placeOrder({ ticker: 'HLVG', side: 'buy', type: 'market', quantity: 1 }).success, true);
+  const state = engine.exportState();
+  const earnings = state.upcomingEarnings.find((event) => event.ticker === 'HLVG')!;
+  state.simDay = earnings.simDay;
+  engine.importState(state);
+  engine.skipToNextDay();
+
+  const career = engine.exportState().career;
+  assert.deepEqual(career.earningsHeldTickers, ['HLVG']);
+  assert.ok(career.objectives.find((o) => o.id.endsWith('_2'))?.progressText.includes('awaiting profitable close'));
+  assert.equal(career.objectives.find((o) => o.id.endsWith('_2'))?.completed, false);
+});
+
+test('career ranks beyond Junior Trader unlock margin and weekly objectives rotate without losing reputation', () => {
+  const engine = new MarketSimulationEngine('G4_RANK3_WEEK', 180000);
+  const state = engine.exportState();
+  state.career.currentRankIndex = 1;
+  state.career.reputation = 250;
+  state.simDay = 5;
+  state.career.objectiveWeek = 1;
+  state.career.objectives = state.career.objectives.map((objective) => ({
+    ...objective, completed: true, progressText: 'Complete',
+  }));
+  state.career.protectedOrderIds = ['one', 'two', 'three'];
+  state.career.earningsHeldTickers = ['HLVG'];
+  engine.importState(state);
+
+  engine.tick(0.05);
+  assert.equal(engine.getSnapshot().career.rank.order, 3);
+  assert.equal(engine.exportState().portfolio.marginUnlocked, true);
+
+  engine.skipToNextDay();
+  const career = engine.exportState().career;
+  assert.equal(career.objectiveWeek, 2);
+  assert.equal(career.reputation, 250, 'rotation preserves reputation');
+  assert.deepEqual(career.objectives.map((objective) => objective.id), ['obj_2_1', 'obj_2_2', 'obj_2_3']);
+  assert.ok(career.objectives.every((objective) => !objective.completed));
+  assert.deepEqual(career.protectedOrderIds, []);
+  assert.deepEqual(career.earningsHeldTickers, []);
+});
+
 test('Margin cushion and forced liquidation trigger on maintenance breach', () => {
   // Margin unlocked: $100,000 capital, 2x leverage enabled
   const portfolio = new PortfolioEngine(100000, true, true);

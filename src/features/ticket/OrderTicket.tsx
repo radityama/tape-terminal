@@ -39,6 +39,10 @@ export function OrderTicket() {
   const isShortUnlocked = (career?.rank?.order ?? 1) >= 2;
   // Margin unlock check (rank order >= 3)
   const isMarginUnlocked = (career?.rank?.order ?? 1) >= 3;
+  // Rank 1 accounts can still close a long position even while shorts stay locked.
+  const heldShares = snapshot?.positions.find((p) => p.ticker === selectedTicker)?.shares ?? 0;
+  const canSell = isShortUnlocked || heldShares > 0;
+  const activeSide: OrderSide = canSell ? side : 'buy';
 
   // Pre-trade calculation
   const preTrade = useMemo(() => {
@@ -46,7 +50,7 @@ export function OrderTicket() {
     let basePrice = currentPrice;
 
     if (depth) {
-      basePrice = side === 'buy' ? depth.bestAsk : depth.bestBid;
+      basePrice = activeSide === 'buy' ? depth.bestAsk : depth.bestBid;
     }
 
     // Estimate fill price with book walk
@@ -58,7 +62,7 @@ export function OrderTicket() {
       estFillPrice = parseFloat(limitPrice);
     } else if (depth) {
       // Simulate fill with depth ladder
-      const levels = side === 'buy' ? depth.asks : depth.bids;
+      const levels = activeSide === 'buy' ? depth.asks : depth.bids;
       let rem = qty;
       let accum = 0;
       for (const lvl of levels) {
@@ -69,7 +73,7 @@ export function OrderTicket() {
       }
       if (rem > 0) {
         const last = levels[levels.length - 1];
-        accum += rem * (side === 'buy' ? last.price + depth.spread : Math.max(0.01, last.price - depth.spread));
+        accum += rem * (activeSide === 'buy' ? last.price + depth.spread : Math.max(0.01, last.price - depth.spread));
       }
       estFillPrice = Math.round((accum / qty) * 100) / 100;
       estSlippageDollars = Math.abs(estFillPrice - basePrice);
@@ -86,7 +90,7 @@ export function OrderTicket() {
     const currentCash = risk?.cashBalance || 100000;
     const currentBuyingPower = risk?.buyingPower || 100000;
 
-    const resultingCash = side === 'buy' ? currentCash - totalTradeCost : currentCash + (qty * estFillPrice) - estCommission;
+    const resultingCash = activeSide === 'buy' ? currentCash - totalTradeCost : currentCash + (qty * estFillPrice) - estCommission;
     const resultingBuyingPower = Math.max(0, currentBuyingPower - totalTradeCost);
     const positionFraction = currentEquity > 0 ? (totalTradeCost / currentEquity) * 100 : 0;
     const isLargeOrder = positionFraction >= 25;
@@ -101,9 +105,9 @@ export function OrderTicket() {
       resultingBuyingPower,
       positionFraction,
       isLargeOrder,
-      hasSufficientBuyingPower: side === 'sell' || totalTradeCost <= currentBuyingPower,
+      hasSufficientBuyingPower: activeSide === 'sell' || totalTradeCost <= currentBuyingPower,
     };
-  }, [quantity, side, orderType, limitPrice, currentPrice, depth, risk]);
+  }, [quantity, activeSide, orderType, limitPrice, currentPrice, depth, risk]);
 
   const handleQuickQty = (percent: number) => {
     const bp = risk?.buyingPower || 10000;
@@ -131,7 +135,7 @@ export function OrderTicket() {
 
     placeOrder({
       ticker: selectedTicker,
-      side,
+      side: activeSide,
       type: orderType,
       quantity,
       limitPrice: lPrice,
@@ -161,7 +165,7 @@ export function OrderTicket() {
           <button
             onClick={() => setSide('buy')}
             className={`py-1 text-center font-bold font-mono text-[11px] rounded-[2px] transition-colors cursor-pointer ${
-              side === 'buy'
+              activeSide === 'buy'
                 ? 'bg-[var(--up)] text-black'
                 : 'text-[var(--text-3)] hover:text-[var(--text-1)]'
             }`}
@@ -170,20 +174,20 @@ export function OrderTicket() {
           </button>
           <button
             onClick={() => {
-              if (!isShortUnlocked) return;
+              if (!canSell) return;
               setSide('sell');
             }}
-            disabled={!isShortUnlocked}
+            disabled={!canSell}
             className={`py-1 text-center font-bold font-mono text-[11px] rounded-[2px] transition-colors cursor-pointer ${
-              side === 'sell'
+              activeSide === 'sell'
                 ? 'bg-[var(--down)] text-white'
-                : !isShortUnlocked
+                : !canSell
                 ? 'text-[var(--text-3)] opacity-40 cursor-not-allowed'
                 : 'text-[var(--text-3)] hover:text-[var(--text-1)]'
             }`}
-            title={!isShortUnlocked ? 'Short selling unlocks at Rank 2 (Junior Trader)' : undefined}
+            title={!canSell ? 'Short selling unlocks at Rank 2 (Junior Trader); you have no long position to close' : undefined}
           >
-            SELL {!isShortUnlocked ? '(LOCKED)' : '/ SHORT'}
+            SELL {!canSell ? '(LOCKED)' : isShortUnlocked ? '/ SHORT' : '/ CLOSE'}
           </button>
         </div>
 
@@ -401,12 +405,12 @@ export function OrderTicket() {
             className={`w-full py-2 rounded-[2px] font-mono font-bold text-[12px] uppercase tracking-wide transition-all cursor-pointer ${
               !preTrade.hasSufficientBuyingPower
                 ? 'bg-[var(--line)] text-[var(--text-3)] cursor-not-allowed'
-                : side === 'buy'
+                : activeSide === 'buy'
                 ? 'bg-[var(--up)] text-black hover:brightness-105 active:translate-y-[1px]'
                 : 'bg-[var(--down)] text-white hover:brightness-105 active:translate-y-[1px]'
             }`}
           >
-            {preTrade.hasSufficientBuyingPower ? `Place ${side.toUpperCase()} Order` : 'Insufficient Buying Power'}
+            {preTrade.hasSufficientBuyingPower ? `Place ${activeSide.toUpperCase()} Order` : 'Insufficient Buying Power'}
           </button>
         </div>
       </div>

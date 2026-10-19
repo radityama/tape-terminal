@@ -72,7 +72,7 @@ export function CareerModal() {
             <div className="bg-[var(--bg-0)] p-3 border border-[var(--line)] rounded-[2px] space-y-2 font-mono text-[11px]">
               <div className="flex justify-between items-center text-[11px]">
                 <span className="text-[var(--text-2)]">Next Promotion: <strong className="text-[var(--text-1)]">{nextRank.name}</strong></span>
-                <span className="text-[var(--accent)]">Target: ${nextRank.equityTarget.toLocaleString()} Equity</span>
+                <span className="text-[var(--accent)]">Target: ${nextRank.equityTarget.toLocaleString()} + {nextRank.reputationRequired} pts</span>
               </div>
 
               {/* Progress bar */}
@@ -88,6 +88,23 @@ export function CareerModal() {
               <div className="flex justify-between text-[10px] text-[var(--text-3)]">
                 <span>Account Equity: ${risk.netLiquidationValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                 <span>Max Drawdown Limit: {nextRank.maxDrawdownPercent}%</span>
+              </div>
+
+              <div className="flex justify-between text-[10px]">
+                <span className="text-[var(--text-3)]">Reputation Requirement</span>
+                <span className={career.reputation >= nextRank.reputationRequired ? 'text-[var(--up)]' : 'text-[var(--text-2)]'}>
+                  {career.reputation} / {nextRank.reputationRequired} pts
+                </span>
+              </div>
+              <div className="h-1.5 bg-[var(--bg-2)] rounded-[1px] overflow-hidden">
+                <div
+                  className={career.reputation >= nextRank.reputationRequired ? 'h-full bg-[var(--up)]' : 'h-full bg-[var(--accent)]'}
+                  style={{
+                    width: `${Math.min(100, Math.max(0,
+                      nextRank.reputationRequired > 0 ? (career.reputation / nextRank.reputationRequired) * 100 : 100,
+                    ))}%`,
+                  }}
+                />
               </div>
             </div>
           ) : (
@@ -125,7 +142,9 @@ export function CareerModal() {
             </div>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
               {career.objectives.map((obj) => (
-                <div key={obj.id} className="bg-[var(--bg-0)] p-2.5 border border-[var(--line)] rounded-[2px] flex flex-col justify-between">
+                <div key={obj.id} className={`bg-[var(--bg-0)] p-2.5 border rounded-[2px] flex flex-col justify-between ${
+                  obj.completed ? 'border-[var(--up)]' : 'border-[var(--line)]'
+                }`}>
                   <div>
                     <div className="flex justify-between items-start">
                       <span className="font-mono font-semibold text-[11px] text-[var(--text-1)]">{obj.title}</span>
@@ -134,7 +153,14 @@ export function CareerModal() {
                     <p className="text-[10px] text-[var(--text-3)] mt-1 font-sans">{obj.description}</p>
                   </div>
                   <div className="mt-2 text-[10px] font-mono text-[var(--text-2)] flex items-center space-x-1">
-                    <span className="text-[var(--accent)]">{obj.progressText}</span>
+                    {obj.completed ? (
+                      <>
+                        <CheckCircle size={12} weight="fill" className="text-[var(--up)]" />
+                        <span className="text-[var(--up)]">Completed</span>
+                      </>
+                    ) : (
+                      <span className="text-[var(--accent)]">{obj.progressText}</span>
+                    )}
                   </div>
                 </div>
               ))}
