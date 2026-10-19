@@ -425,17 +425,18 @@ test('same-tick legacy buys compete deterministically across tickers without ove
   const first = source.placeOrder({ ticker: 'HLVG', side: 'buy', type: 'limit', quantity: 5, limitPrice: 180 });
   assert.equal(first.success, true);
   const state = source.exportState();
-  state.openOrders.push({ ...state.openOrders[0], id: 'legacy_vcrx', ticker: 'VCRX' });
+  state.openOrders[0].createdAt = 2000;
+  state.openOrders.push({ ...state.openOrders[0], id: 'legacy_vcrx', ticker: 'VCRX', createdAt: 1000 });
   const results = [];
   for (let i = 0; i < 2; i++) {
     const engine = new MarketSimulationEngine(state.seed, 1000);
     engine.importState(state);
     engine.tick(0.05);
     const after = engine.exportState();
-    assert.equal(after.portfolio.positions.find((position) => position.ticker === 'HLVG')?.shares, 5);
-    assert.equal(after.portfolio.positions.find((position) => position.ticker === 'VCRX'), undefined);
+    assert.equal(after.portfolio.positions.find((position) => position.ticker === 'VCRX')?.shares, 5);
+    assert.equal(after.portfolio.positions.find((position) => position.ticker === 'HLVG'), undefined);
     assert.ok(Number(after.portfolio.cash) >= 0);
-    assert.deepEqual(after.openOrders.map((order) => order.id), ['legacy_vcrx']);
+    assert.deepEqual(after.openOrders.map((order) => order.id), [first.orderId]);
     assert.equal(after.portfolio.tradeHistory.length, 1);
     results.push([after.portfolio.cash, after.portfolio.positions.map(({ entryTimestamp, ...position }) => position),
       after.openOrders, after.actionSeq, after.rngState]);
@@ -592,6 +593,30 @@ test('margin short fills cannot exceed the same 2:1 buying-power limit as buys',
   const before = portfolio.exportState();
   assert.equal(short(2).success, false);
   assert.deepEqual(portfolio.exportState(), before);
+});
+
+test('cash-account short proceeds cannot pay a commission greater than the remaining collateral', () => {
+  const portfolio = new PortfolioEngine(1, false, true);
+  const before = portfolio.exportState();
+  assert.equal(portfolio.executeFill({ orderId: 'tiny_short', ticker: 'HLVG', side: 'sell', shares: 1,
+    price: 0.01, commission: 1.5, slippageDollars: 0, timestamp: 1000 }).success, false);
+  assert.deepEqual(portfolio.exportState(), before);
+});
+
+test('a short-to-long reversal may use buying power released by covering the short', () => {
+  const source = new MarketSimulationEngine('G2_MARGIN_REVERSAL', 1000);
+  const portfolio = new PortfolioEngine(1000, true, true);
+  assert.equal(portfolio.executeFill({ orderId: 'short', ticker: 'HLVG', side: 'sell', shares: 13,
+    price: 151.7, commission: 1.5, slippageDollars: 0, timestamp: 1000 }).success, true);
+  const state = source.exportState();
+  state.portfolio = portfolio.exportState();
+  const engine = new MarketSimulationEngine(state.seed, 1000);
+  engine.importState(state);
+  assert.ok(engine.getSnapshot().riskMetrics.buyingPower < 100);
+  assert.equal(engine.placeOrder({ ticker: 'HLVG', side: 'buy', type: 'limit', quantity: 14,
+    limitPrice: 200 }).success, true);
+  engine.tick(0.05);
+  assert.equal(engine.getSnapshot().positions.find((position) => position.ticker === 'HLVG')?.shares, 1);
 });
 
 test('Margin cushion and forced liquidation trigger on maintenance breach', () => {

@@ -201,6 +201,15 @@ export class PortfolioEngine {
     if (side === 'sell' && !this.shortingUnlocked && shares > Math.max(existing?.shares ?? 0, 0)) {
       return { success: false, error: 'Short selling unlocks at Rank 2 (Junior Trader).' };
     }
+    if (side === 'sell' && !this.marginUnlocked && shares > Math.max(0, existing?.shares ?? 0)) {
+      let shortValue = Math.max(0, shares - (existing?.shares ?? 0)) * price;
+      for (const position of this.positions.values()) {
+        if (position.ticker !== ticker && position.shares < 0) shortValue += position.marketValue;
+      }
+      if (Math.round((this.getCash() + notional - commission - shortValue) * 100) < 0) {
+        return { success: false, error: 'Insufficient buying power.' };
+      }
+    }
     if (side === 'buy' && shares > Math.max(0, -(existing?.shares ?? 0))) {
       const cashAfter = this.getCash() - notional - commission;
       if (!this.marginUnlocked) {

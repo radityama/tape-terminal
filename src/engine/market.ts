@@ -304,16 +304,21 @@ export class MarketSimulationEngine {
   }
 
   private buyCapital(ticker: string, shares: number, price: number, coveredShares = 0): number {
-    const shortShares = Math.max(0, -(this.portfolioEngine.getPosition(ticker)?.shares ?? 0) - coveredShares);
+    const position = this.portfolioEngine.getPosition(ticker);
+    const shortShares = Math.max(0, -(position?.shares ?? 0) - coveredShares);
     const openingShares = Math.max(0, shares - shortShares);
     if (!openingShares) return 0;
     const fee = this.matchingEngine.calculateCommission(shares, price);
-    return Math.round((openingShares * price + fee * (this.portfolioEngine.isMarginUnlocked() ? 2 : 1)) * 100) / 100;
+    const cover = shares - openingShares;
+    const coverAdjustment = cover && position ? cover * (this.portfolioEngine.isMarginUnlocked()
+      ? 2 * price - 3 * position.currentPrice : price - position.currentPrice) : 0;
+    return Math.round(Math.max(0, openingShares * price + coverAdjustment
+      + fee * (this.portfolioEngine.isMarginUnlocked() ? 2 : 1)) * 100) / 100;
   }
 
   private reservedBuyingPower(before?: Order, coveredShares = new Map<string, number>()): number {
     let reserved = 0;
-    for (const order of this.openOrders.values()) {
+    for (const order of [...this.openOrders.values()].sort((a, b) => a.createdAt - b.createdAt)) {
       if (order === before) break;
       if (order.side !== 'buy' || !isValidPendingOrder(order)
         || (order.status !== 'pending' && order.status !== 'partially_filled')) continue;
@@ -386,7 +391,7 @@ export class MarketSimulationEngine {
     const currentSimEpochSec = Math.floor(Date.now() / 1000);
     this.pricingEngine.updateCandles(currentSimEpochSec);
 
-    // Update order book depth caches and match active orders
+    // Update order book depth caches before matching orders by age across all tickers.
     const priceMap = this.pricingEngine.getPriceMap();
     const regime = this.pricingEngine.getRegime();
 
@@ -397,11 +402,13 @@ export class MarketSimulationEngine {
       const depth = this.bookEngine.generateDepth(comp, priceState.price, regime);
       this.depthCache.set(comp.ticker, depth);
 
-      // Check open orders for this ticker
-      for (const order of this.openOrders.values()) {
-        if (order.ticker === comp.ticker && (order.status === 'pending' || order.status === 'partially_filled')) {
-          this.evaluateOrder(order, depth, priceState.price);
-        }
+    }
+
+    for (const order of [...this.openOrders.values()].sort((a, b) => a.createdAt - b.createdAt)) {
+      const depth = this.depthCache.get(order.ticker);
+      const priceState = this.pricingEngine.getState(order.ticker);
+      if (depth && priceState && (order.status === 'pending' || order.status === 'partially_filled')) {
+        this.evaluateOrder(order, depth, priceState.price);
       }
     }
 
