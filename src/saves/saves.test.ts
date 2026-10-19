@@ -142,6 +142,35 @@ test('legacy invalid pending orders remain recoverable but cannot fill after imp
   assert.equal(restored.placeOrder({ ticker: 'HLVG', side: 'buy', type: 'market', quantity: 2 }).success, true);
 });
 
+test('stop-limit trigger state survives the v1 codec and legacy absence stays untriggered', () => {
+  const engine = new MarketSimulationEngine('G8_SAVE_CODEC', 100000);
+  const placed = engine.placeOrder({
+    ticker: 'HLVG', side: 'buy', type: 'stop_limit', quantity: 2,
+    stopPrice: 1, limitPrice: 100, timeInForce: 'GTC',
+  });
+  assert.equal(placed.success, true);
+  engine.tick(0.05);
+
+  const save = makeSave(engine, 'G8_SAVE_CODEC');
+  const wire = wireOf(save);
+  const wireOrder = (wire as unknown as { game: { openOrders: Array<{ stopTriggered?: boolean }> } }).game.openOrders[0];
+  assert.equal(wireOrder.stopTriggered, true, 'trigger state is written to the unchanged v1 schema');
+
+  const decoded = SaveGameSchema.decode(wire);
+  assert.equal(decoded.game.openOrders[0].stopTriggered, true);
+  assert.deepEqual(wireOf(decoded), wire);
+
+  // A save written before this field existed must load as untriggered and evaluate normally.
+  delete wireOrder.stopTriggered;
+  const legacy = SaveGameSchema.decode(wire);
+  assert.equal(legacy.game.openOrders[0].stopTriggered, undefined);
+  const restored = new MarketSimulationEngine(legacy.seed, 100000);
+  restored.importState(legacy.game);
+  assert.equal(restored.exportState().openOrders[0].stopTriggered, undefined);
+  restored.tick(0.05);
+  assert.equal(restored.exportState().openOrders[0].stopTriggered, true);
+});
+
 test('a saved partial order retains its progress and only fills its residual quantity', () => {
   const engine = new MarketSimulationEngine('G0_SAVED_PARTIAL', 1000000);
   assert.equal(engine.placeOrder({ ticker: 'VCRX', side: 'buy', type: 'market', quantity: 997 }).success, true);

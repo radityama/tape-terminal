@@ -199,6 +199,7 @@ const orderSchema = z.object({
   trailingAmount: optMoney,
   highestPriceObserved: optMoney,
   lowestPriceObserved: optMoney,
+  stopTriggered: z.boolean().optional(),
   timeInForce: z.enum(['DAY', 'GTC']),
   status: z.enum(['pending', 'partially_filled', 'filled', 'cancelled', 'rejected']),
   createdAt: z.number(),

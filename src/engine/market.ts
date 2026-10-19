@@ -484,7 +484,12 @@ export class MarketSimulationEngine {
 
   private evaluateOrder(order: Order, depth: OrderBookDepth, currentPrice: number) {
     if (!this.isLiveOrder(order)) return;
+    const wasStopTriggered = order.stopTriggered === true;
     const fillResult = this.matchingEngine.evaluatePendingOrder(order, depth, currentPrice);
+    if (!wasStopTriggered && order.stopTriggered === true) {
+      // Latching a stop-limit is durable order state and must advance the save sequence.
+      this.actionSeq += 1;
+    }
     if (!fillResult || !fillResult.shouldFill) return;
 
     const remainingShares = order.quantity - order.filledQuantity;

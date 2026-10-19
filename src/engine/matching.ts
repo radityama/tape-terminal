@@ -18,6 +18,8 @@ export interface Order {
   trailingAmount?: number; // dollar distance for trailing stop
   highestPriceObserved?: number; // for sell trailing stop
   lowestPriceObserved?: number; // for buy trailing stop
+  // A stop-limit stop latches once crossed and then rests as a limit order.
+  stopTriggered?: boolean;
   timeInForce: TimeInForce;
   status: OrderStatus;
   createdAt: number;
@@ -173,22 +175,25 @@ export class OrderMatchingEngine {
 
       case 'stop_limit': {
         if (!order.stopPrice || !order.limitPrice) return null;
-        // Triggers once price crosses stop threshold, fills only if limit condition satisfied
-        const triggered = side === 'buy' ? currentPrice >= order.stopPrice : currentPrice <= order.stopPrice;
-        if (triggered) {
-          if (side === 'buy' && depth.bestAsk <= order.limitPrice) {
-            return {
-              shouldFill: true,
-              fillPrice: depth.bestAsk,
-              slippage: 0,
-            };
-          } else if (side === 'sell' && depth.bestBid >= order.limitPrice) {
-            return {
-              shouldFill: true,
-              fillPrice: depth.bestBid,
-              slippage: 0,
-            };
-          }
+        if (!order.stopTriggered) {
+          const crossed = side === 'buy' ? currentPrice >= order.stopPrice : currentPrice <= order.stopPrice;
+          if (!crossed) return null;
+          // Latch for the rest of the order's life; later prices cannot untrigger it.
+          order.stopTriggered = true;
+        }
+        // A triggered stop-limit rests as a plain limit order at its configured limit.
+        if (side === 'buy' && depth.bestAsk <= order.limitPrice) {
+          return {
+            shouldFill: true,
+            fillPrice: depth.bestAsk,
+            slippage: 0,
+          };
+        } else if (side === 'sell' && depth.bestBid >= order.limitPrice) {
+          return {
+            shouldFill: true,
+            fillPrice: depth.bestBid,
+            slippage: 0,
+          };
         }
         return null;
       }
