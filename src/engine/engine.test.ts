@@ -658,6 +658,19 @@ test('a short-to-long reversal may use buying power released by covering the sho
   assert.equal(engine.getSnapshot().positions.find((position) => position.ticker === 'HLVG')?.shares, 1);
 });
 
+test('filled positions are re-marked at the current market price after matching', () => {
+  const engine = new MarketSimulationEngine('G2_REMARK', 100000);
+  assert.equal(engine.placeOrder({ ticker: 'HLVG', side: 'buy', type: 'limit', quantity: 5, limitPrice: 1000, timeInForce: 'GTC' }).success, true);
+  engine.tick(0.5);
+
+  const snapshot = engine.getSnapshot();
+  const position = snapshot.positions.find((p) => p.ticker === 'HLVG');
+  const mark = snapshot.prices.find((p) => p.ticker === 'HLVG')!.price;
+  assert.ok(position);
+  assert.equal(position.currentPrice, mark, 'a fill must not leave the tick marked at its execution price');
+  assert.equal(position.marketValue, Math.round(position.shares * mark * 100) / 100);
+});
+
 test('Margin cushion and forced liquidation trigger on maintenance breach', () => {
   // Margin unlocked: $100,000 capital, 2x leverage enabled
   const portfolio = new PortfolioEngine(100000, true, true);

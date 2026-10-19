@@ -415,6 +415,9 @@ export class MarketSimulationEngine {
       }
     }
 
+    // Fills mark the position at its execution price; restore the market mark for the rest of the tick.
+    this.portfolioEngine.updateMarketPrices(priceMap);
+
     // Check margin cushion and margin calls
     const risk = this.portfolioEngine.calculateRiskMetrics(COMPANY_MAP);
     if (risk.isMarginBreached) {
