@@ -109,6 +109,45 @@ test('cancelling a bracket parent before its fill leaves no executable children'
   assert.equal(after.portfolio.tradeHistory.length, 0);
 });
 
+test('cancelling a filled parent id still cancels its linked exits', () => {
+  const engine = new MarketSimulationEngine('G5_CANCEL_FILLED_PARENT', 100000);
+  const entry = engine.placeOrder({ ...ENTRY, takeProfitPrice: 1000000, stopLossPrice: 0.01 });
+  assert.equal(entry.success, true);
+  assert.equal(openExits(engine).length, 2);
+
+  assert.equal(engine.cancelOrder(entry.orderId!), true);
+  assert.equal(openExits(engine).length, 0);
+  assert.equal(engine.exportState().portfolio.positions.find((position) => position.ticker === 'HLVG')?.shares, 2);
+
+  engine.tick(0.05);
+  assert.equal(engine.exportState().portfolio.tradeHistory.length, 1, 'cancelling exits does not close the position');
+});
+
+test('cancelling an open parent removes linked children from a recovered state', () => {
+  const engine = new MarketSimulationEngine('G5_CANCEL_OPEN_PARENT', 100000);
+  const parent = engine.placeOrder({
+    ticker: 'HLVG', side: 'buy', type: 'limit', quantity: 2, limitPrice: 1,
+    takeProfitPrice: 1000000, stopLossPrice: 0.01, timeInForce: 'GTC',
+  });
+  assert.equal(parent.success, true);
+
+  const state = engine.exportState();
+  for (const [id, type, price] of [['tp', 'limit', 1000000], ['sl', 'stop', 0.01]] as const) {
+    state.openOrders.push({
+      id: `${parent.orderId}_${id}`, ticker: 'HLVG', side: 'sell', type, quantity: 2,
+      filledQuantity: 0, ...(type === 'limit' ? { limitPrice: price } : { stopPrice: price }),
+      timeInForce: 'GTC', status: 'pending', createdAt: 1, commissionPaid: 0,
+      parentOrderId: parent.orderId, isBracketChild: true,
+    });
+  }
+  const restored = new MarketSimulationEngine(state.seed, 100000);
+  restored.importState(state);
+  assert.equal(restored.exportState().openOrders.length, 3);
+
+  assert.equal(restored.cancelOrder(parent.orderId!), true);
+  assert.equal(restored.exportState().openOrders.length, 0);
+});
+
 test('independent bracket groups on one ticker keep their own OCO pairs', () => {
   const engine = new MarketSimulationEngine('G5_MULTI_GROUP', 100000);
   const first = engine.placeOrder({ ...ENTRY, takeProfitPrice: 0.01, stopLossPrice: 0.01 });

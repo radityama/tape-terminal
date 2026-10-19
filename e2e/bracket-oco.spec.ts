@@ -79,8 +79,11 @@ test.describe('bracket orders', () => {
     await expect(dock(page).locator('tbody tr')).toHaveCount(2);
     await expect(dock(page).getByText('SELL', { exact: true })).toHaveCount(1);
 
-    // Give the engine more ticks: a stale sibling would otherwise open a short or leave an order.
-    await page.waitForTimeout(1500);
+    // Wait for the sim clock to advance instead of sleeping: a stale sibling would have
+    // had a full later tick to open a short or leave an order behind.
+    const clock = page.locator('#tutorial-sim-clock');
+    const before = await clock.innerText();
+    await expect.poll(() => clock.innerText(), { timeout: 5000 }).not.toBe(before);
     await expect(dock(page).getByRole('button', { name: /Positions \(0\)/ })).toBeVisible();
     await expect(dock(page).getByRole('button', { name: /Orders \(0\)/ })).toBeVisible();
     await expect(dock(page).locator('tbody tr')).toHaveCount(2);

@@ -508,7 +508,7 @@ test('limit, stop-limit, stop and trailing buys share the same available capital
   assert.ok(engine.getSnapshot().riskMetrics.buyingPower < 400);
 });
 
-test('a locked oversized bracket exit cannot consume cash or sell a negative position', () => {
+test('a manual partial close clamps a linked exit before it can sell the remaining long', () => {
   const engine = new MarketSimulationEngine('G2_BRACKET', 1000);
   assert.equal(engine.placeOrder({ ticker: 'HLVG', side: 'buy', type: 'market', quantity: 2,
     takeProfitPrice: 1, stopLossPrice: 100000 }).success, true);

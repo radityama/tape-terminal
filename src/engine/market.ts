@@ -297,17 +297,16 @@ export class MarketSimulationEngine {
 
   cancelOrder(orderId: string): boolean {
     const order = this.openOrders.get(orderId);
-    if (!order || !this.isLiveOrder(order)) return false;
+    const parentIsLive = !!order && this.isLiveOrder(order);
+    // A filled parent is no longer in the map, but its id is the OCO group. Cancelling
+    // that id still abandons the attached exits. Cancelling one child leaves its sibling.
+    const children = [...this.openOrders.values()].filter((child) =>
+      child.isBracketChild && child.parentOrderId === orderId
+      && (!order || child.ticker === order.ticker) && this.isLiveOrder(child));
+    if (!parentIsLive && children.length === 0) return false;
 
-    // Cancelling a bracket parent abandons both exit legs with it. Cancelling one
-    // child leaves its OCO sibling active, which is the point of an OCO pair.
-    for (const child of [...this.openOrders.values()]) {
-      if (child.isBracketChild && child.parentOrderId === orderId
-        && child.ticker === order.ticker && this.isLiveOrder(child)) {
-        this.cancelOpenOrder(child);
-      }
-    }
-    this.cancelOpenOrder(order);
+    for (const child of children) this.cancelOpenOrder(child);
+    if (parentIsLive) this.cancelOpenOrder(order);
     this.actionSeq += 1;
     return true;
   }
