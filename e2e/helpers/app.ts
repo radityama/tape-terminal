@@ -53,7 +53,12 @@ export async function skipToNextDay(page: Page): Promise<number> {
   // Skipping the day opens the end-of-day settlement report.
   const continueTrading = page.getByRole('button', { name: /Continue Trading/ });
   if (await continueTrading.count()) {
-    await continueTrading.first().click();
+    try {
+      await continueTrading.first().click({ timeout: 3000 });
+    } catch (error) {
+      // A sync conflict can arrive first and cover the settlement report.
+      if (!(await page.getByRole('dialog').filter({ hasText: /Save Conflict/ }).isVisible())) throw error;
+    }
   }
   const text = await clock.innerText();
   const match = text.match(/Day\s+(\d+)/);
