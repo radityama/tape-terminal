@@ -57,7 +57,11 @@ export async function skipToNextDay(page: Page): Promise<number> {
       await continueTrading.first().click({ timeout: 3000 });
     } catch (error) {
       // A sync conflict can arrive first and cover the settlement report.
-      if (!(await page.getByRole('dialog').filter({ hasText: /Save Conflict/ }).isVisible())) throw error;
+      try {
+        await expect(page.getByRole('dialog').filter({ hasText: /Save Conflict/ })).toBeVisible({ timeout: 10_000 });
+      } catch {
+        throw error;
+      }
     }
   }
   const text = await clock.innerText();
