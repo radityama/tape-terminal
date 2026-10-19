@@ -258,6 +258,9 @@ test('short sale proceeds are offset by marked liability and commissions', () =>
   assert.equal(portfolio.getPosition('HLVG')?.shares, -6);
   assert.equal(portfolio.getPosition('HLVG')?.unrealizedPnl, 60);
   assert.equal(portfolio.calculateRiskMetrics(COMPANY_MAP).netLiquidationValue, 10097);
+  portfolio.updateMarketPrices(new Map([['HLVG', 120]]));
+  assert.equal(portfolio.getPosition('HLVG')?.unrealizedPnl, -120);
+  assert.equal(portfolio.calculateRiskMetrics(COMPANY_MAP).netLiquidationValue, 9917);
 });
 
 test('partial close moves marked gain into realized profit without changing equity except commission', () => {
