@@ -454,6 +454,8 @@ export class MarketSimulationEngine {
         // Liquidation closes the position outside the matching loop, so linked exits
         // must be reclaimed here or they could close a position reopened later.
         this.reconcileBracketOrders(liq.liquidatedTicker);
+        // The forced fill and the reclaimed exits are durable state changes.
+        this.actionSeq += 1;
       }
       if (liq && this.onMarginCallCallback) {
         this.onMarginCallCallback(liq.explanation);

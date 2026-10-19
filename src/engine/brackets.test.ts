@@ -334,6 +334,7 @@ test('margin liquidation cancels linked exits for the liquidated position', () =
     },
   ];
   engine.importState(state);
+  const before = engine.exportState();
 
   engine.tick(0.05);
 
@@ -341,6 +342,7 @@ test('margin liquidation cancels linked exits for the liquidated position', () =
   assert.equal(after.portfolio.positions.find((position) => position.ticker === 'HLVG'), undefined);
   assert.equal(after.openOrders.length, 0, 'liquidation reclaims the linked exits');
   assert.equal(after.portfolio.tradeHistory.length, 1, 'one forced liquidation, no exit retry');
+  assert.equal(after.actionSeq, before.actionSeq + 1, 'the forced fill and reclaimed exits advance the save sequence');
 });
 
 test('save and reload reconstruct explicit linked exits and their OCO behavior', () => {
