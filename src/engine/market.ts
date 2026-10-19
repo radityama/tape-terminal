@@ -297,13 +297,31 @@ export class MarketSimulationEngine {
 
   cancelOrder(orderId: string): boolean {
     const order = this.openOrders.get(orderId);
-    if (order && (order.status === 'pending' || order.status === 'partially_filled')) {
-      order.status = 'cancelled';
-      this.openOrders.delete(orderId);
-      this.actionSeq += 1;
-      return true;
+    if (!order || !this.isLiveOrder(order)) return false;
+
+    // Cancelling a bracket parent abandons both exit legs with it. Cancelling one
+    // child leaves its OCO sibling active, which is the point of an OCO pair.
+    for (const child of [...this.openOrders.values()]) {
+      if (child.isBracketChild && child.parentOrderId === orderId
+        && child.ticker === order.ticker && this.isLiveOrder(child)) {
+        this.cancelOpenOrder(child);
+      }
     }
-    return false;
+    this.cancelOpenOrder(order);
+    this.actionSeq += 1;
+    return true;
+  }
+
+  // A tick iteration holds object references, so an order cancelled earlier in the same
+  // pass must be checked against the live map before it is allowed to fill.
+  private isLiveOrder(order: Order): boolean {
+    return (order.status === 'pending' || order.status === 'partially_filled')
+      && this.openOrders.get(order.id) === order;
+  }
+
+  private cancelOpenOrder(order: Order) {
+    order.status = 'cancelled';
+    this.openOrders.delete(order.id);
   }
 
   private buyCapital(ticker: string, shares: number, price: number, coveredShares = 0): number {
@@ -417,7 +435,7 @@ export class MarketSimulationEngine {
     for (const order of [...this.openOrders.values()].sort((a, b) => a.createdAt - b.createdAt)) {
       const depth = this.depthCache.get(order.ticker);
       const priceState = this.pricingEngine.getState(order.ticker);
-      if (depth && priceState && (order.status === 'pending' || order.status === 'partially_filled')) {
+      if (depth && priceState && this.isLiveOrder(order)) {
         this.evaluateOrder(order, depth, priceState.price);
       }
     }
@@ -455,6 +473,7 @@ export class MarketSimulationEngine {
   }
 
   private evaluateOrder(order: Order, depth: OrderBookDepth, currentPrice: number) {
+    if (!this.isLiveOrder(order)) return;
     const fillResult = this.matchingEngine.evaluatePendingOrder(order, depth, currentPrice);
     if (!fillResult || !fillResult.shouldFill) return;
 
@@ -464,9 +483,17 @@ export class MarketSimulationEngine {
       const coveredShares = new Map<string, number>();
       const available = Math.max(0, this.portfolioEngine.getBuyingPower() - this.reservedBuyingPower(order, coveredShares));
       if (Math.round(this.buyCapital(order.ticker, remainingShares, fillResult.fillPrice, coveredShares.get(order.ticker) ?? 0) * 100) > Math.round(available * 100)) {
-        return; // A gap or older reservation exhausted funds; keep the order pending for retry/cancellation.
+        if (order.isBracketChild) {
+          // Linked exits fail closed: a stale leg must not retry forever.
+          order.status = 'rejected';
+          this.openOrders.delete(order.id);
+          this.actionSeq += 1;
+          this.reconcileBracketOrders(order.ticker);
+        }
+        return; // An independent gap or older reservation keeps the order pending for retry/cancellation.
       }
     }
+    const sharesBeforeFill = this.portfolioEngine.getPosition(order.ticker)?.shares ?? 0;
     const fillRes = this.portfolioEngine.executeFill({
       orderId: order.id,
       ticker: order.ticker,
@@ -478,6 +505,16 @@ export class MarketSimulationEngine {
       timestamp: Date.now(),
       initialStopPrice: order.stopLossPrice,
     });
+
+    if (!fillRes.success && order.isBracketChild) {
+      // A rejected exit has a terminal lifecycle: it is removed without a commission,
+      // trade or position mutation so a stale leg cannot retry on every future tick.
+      order.status = 'rejected';
+      this.openOrders.delete(order.id);
+      this.actionSeq += 1;
+      this.reconcileBracketOrders(order.ticker);
+      return;
+    }
 
     if (fillRes.success && fillRes.tradeRecord) {
       order.status = 'filled';
@@ -503,33 +540,119 @@ export class MarketSimulationEngine {
         sectors: this.currentSectors(),
       });
 
-      // If bracket child orders are attached, spawn them
-      if (order.takeProfitPrice && order.takeProfitPrice > 0) {
-        const tpSide: OrderSide = order.side === 'buy' ? 'sell' : 'buy';
-        this.placeOrder({
-          ticker: order.ticker,
-          side: tpSide,
-          type: 'limit',
-          quantity: order.quantity,
-          limitPrice: order.takeProfitPrice,
-          timeInForce: 'GTC',
-        });
+      // An exit that completed cancels its OCO sibling before any later order in this
+      // tick (including the sibling itself) can be evaluated.
+      if (order.isBracketChild) {
+        this.cancelOcoSibling(order);
       }
 
-      if (order.stopLossPrice && order.stopLossPrice > 0) {
-        const slSide: OrderSide = order.side === 'buy' ? 'sell' : 'buy';
-        this.placeOrder({
-          ticker: order.ticker,
-          side: slSide,
-          type: 'stop',
-          quantity: order.quantity,
-          stopPrice: order.stopLossPrice,
-          timeInForce: 'GTC',
-        });
+      // Clamp or cancel surviving exits for this ticker before creating new children.
+      this.reconcileBracketOrders(order.ticker);
+
+      const sharesAfterFill = this.portfolioEngine.getPosition(order.ticker)?.shares ?? 0;
+      if (!order.isBracketChild) {
+        this.createBracketChildrenForFill(order, sharesBeforeFill, sharesAfterFill);
       }
 
       if (this.onTradeFillCallback) {
         this.onTradeFillCallback(fillRes.tradeRecord);
+      }
+    }
+  }
+
+  // Bracket children are exits for exposure opened by the parent. A fill that only
+  // closes/reduces an existing position must never attach inverse brackets.
+  private createBracketChildrenForFill(order: Order, sharesBefore: number, sharesAfter: number) {
+    if (order.takeProfitPrice === undefined && order.stopLossPrice === undefined) return;
+    if (order.filledQuantity !== order.quantity) return;
+
+    const openedInOrderDirection = order.side === 'buy'
+      ? Math.max(0, sharesAfter) > Math.max(0, sharesBefore)
+      : Math.max(0, -sharesAfter) > Math.max(0, -sharesBefore);
+    if (!openedInOrderDirection) return;
+    if ([...this.openOrders.values()].some((o) => o.isBracketChild && o.parentOrderId === order.id)) return;
+
+    const side: OrderSide = order.side === 'buy' ? 'sell' : 'buy';
+    const createdAt = Date.now();
+    const children: Order[] = [];
+
+    if (order.takeProfitPrice && order.takeProfitPrice > 0
+      && !validateOrderInput({ type: 'limit', quantity: order.quantity, limitPrice: order.takeProfitPrice })) {
+      children.push({
+        id: `${order.id}_tp`,
+        ticker: order.ticker,
+        side,
+        type: 'limit',
+        quantity: order.quantity,
+        filledQuantity: 0,
+        limitPrice: order.takeProfitPrice,
+        timeInForce: 'GTC',
+        status: 'pending',
+        createdAt,
+        commissionPaid: 0,
+        parentOrderId: order.id,
+        isBracketChild: true,
+      });
+    }
+
+    if (order.stopLossPrice && order.stopLossPrice > 0
+      && !validateOrderInput({ type: 'stop', quantity: order.quantity, stopPrice: order.stopLossPrice })) {
+      children.push({
+        id: `${order.id}_sl`,
+        ticker: order.ticker,
+        side,
+        type: 'stop',
+        quantity: order.quantity,
+        filledQuantity: 0,
+        stopPrice: order.stopLossPrice,
+        timeInForce: 'GTC',
+        status: 'pending',
+        createdAt,
+        commissionPaid: 0,
+        parentOrderId: order.id,
+        isBracketChild: true,
+      });
+    }
+
+    for (const child of children) this.openOrders.set(child.id, child);
+    if (children.length > 0) this.actionSeq += 1;
+
+    // A parent quantity can include shares that were already closed manually, so the
+    // new exits are immediately clamped to the position they are allowed to close.
+    this.reconcileBracketOrders(order.ticker);
+  }
+
+  // One-cancels-other only applies to explicit siblings of the same bracket parent.
+  private cancelOcoSibling(filled: Order) {
+    if (!filled.parentOrderId) return;
+    for (const sibling of [...this.openOrders.values()]) {
+      if (sibling.id === filled.id || !this.isLiveOrder(sibling)) continue;
+      if (sibling.isBracketChild && sibling.parentOrderId === filled.parentOrderId
+        && sibling.ticker === filled.ticker) {
+        this.cancelOpenOrder(sibling);
+      }
+    }
+  }
+
+  // Keep linked exits aligned with the live position. Only bracket children are touched;
+  // independent orders on the same ticker keep their own lifecycle.
+  private reconcileBracketOrders(ticker: string) {
+    const position = this.portfolioEngine.getPosition(ticker)?.shares ?? 0;
+    for (const order of [...this.openOrders.values()]) {
+      if (order.ticker !== ticker || !order.isBracketChild || !this.isLiveOrder(order)) continue;
+
+      const closesPosition = position > 0 ? order.side === 'sell'
+        : position < 0 ? order.side === 'buy' : false;
+      if (!closesPosition) {
+        this.cancelOpenOrder(order);
+        continue;
+      }
+
+      const remaining = Math.min(order.quantity - order.filledQuantity, Math.abs(position));
+      if (remaining <= 0) {
+        this.cancelOpenOrder(order);
+      } else {
+        order.quantity = order.filledQuantity + remaining;
       }
     }
   }

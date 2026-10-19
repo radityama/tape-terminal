@@ -371,18 +371,20 @@ test('automatic bracket exits cannot sell beyond a locked long position', () => 
   assert.equal(engine.placeOrder({ ticker: 'HLVG', side: 'sell', type: 'market', quantity: 1 }).success, true);
   const initial = engine.exportState();
   assert.equal(initial.openOrders.length, 2);
+  assert.ok(initial.openOrders.every((order) => order.parentOrderId && order.isBracketChild));
 
   engine.tick(0.05);
   const after = engine.exportState();
-  assert.equal(after.portfolio.positions.find((position) => position.ticker === 'HLVG')?.shares, 1);
-  assert.equal(after.portfolio.cash, initial.portfolio.cash);
-  assert.equal(after.portfolio.tradeHistory.length, initial.portfolio.tradeHistory.length);
-  assert.equal(after.openOrders.length, 2, 'unlinked exits remain pending until G5 OCO work');
+  // The manual close clamps both linked exits to the one remaining share; the first
+  // exit to fill closes the position and cancels its OCO sibling.
+  assert.equal(after.portfolio.positions.find((position) => position.ticker === 'HLVG'), undefined);
+  assert.equal(after.portfolio.tradeHistory.length, initial.portfolio.tradeHistory.length + 1);
+  assert.equal(after.openOrders.length, 0);
+
   engine.tick(0.05);
-  assert.equal(engine.exportState().portfolio.cash, initial.portfolio.cash);
   assert.equal(engine.exportState().portfolio.tradeHistory.length, after.portfolio.tradeHistory.length);
-  assert.equal(engine.exportState().portfolio.positions.find((position) => position.ticker === 'HLVG')?.shares, 1);
-  assert.equal(engine.exportState().openOrders.length, 2);
+  assert.equal(engine.exportState().portfolio.positions.find((position) => position.ticker === 'HLVG'), undefined);
+  assert.equal(engine.exportState().openOrders.length, 0);
 });
 
 test('pending buys reserve cash across orders and cancellation releases it', () => {
@@ -515,9 +517,10 @@ test('a locked oversized bracket exit cannot consume cash or sell a negative pos
   assert.equal(engine.placeOrder({ ticker: 'HLVG', side: 'sell', type: 'market', quantity: 1 }).success, true);
   engine.tick(0.05);
   const after = engine.exportState();
-  assert.equal(after.portfolio.positions.find((position) => position.ticker === 'HLVG')?.shares, 1);
-  assert.equal(after.portfolio.tradeHistory.length, 2);
-  assert.equal(after.openOrders.filter((order) => order.side === 'sell').length, 2);
+  // The remaining linked exit closes the final share; neither leg can open a short.
+  assert.equal(after.portfolio.positions.find((position) => position.ticker === 'HLVG'), undefined);
+  assert.equal(after.portfolio.tradeHistory.length, 3);
+  assert.equal(after.openOrders.filter((order) => order.side === 'sell').length, 0);
 });
 
 test('restored partial buys reserve only their remaining shares', () => {
