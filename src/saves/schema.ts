@@ -154,6 +154,9 @@ const careerEngineStateSchema = z.object({
   riskBreaches: z.number(),
   objectives: z.array(weeklyObjectiveSchema),
   achievements: z.array(achievementSchema),
+  objectiveWeek: z.number().int().optional(),
+  protectedOrderIds: z.array(z.string()).optional(),
+  earningsHeldTickers: z.array(z.string()).optional(),
 });
 
 const rivalTraderSchema = z.object({

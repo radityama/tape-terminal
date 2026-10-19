@@ -205,6 +205,55 @@ test('v1 pending buy saves retain their wire format and reconstruct reservations
   assert.equal(restored.getSnapshot().riskMetrics.buyingPower, 1000);
 });
 
+test('career progress tracking round trips and old saves load without invented completions', () => {
+  const engine = new MarketSimulationEngine('G4_SAVE_TRACKING', 140000);
+  const state = engine.exportState();
+  state.career.protectedOrderIds = ['ord_1', 'ord_2'];
+  state.career.earningsHeldTickers = ['HLVG'];
+  engine.importState(state);
+
+  const wire = wireOf(makeSave(engine, 'G4_SAVE_TRACKING'));
+  const decoded = SaveGameSchema.decode(wire);
+  assert.deepEqual(wireOf(decoded), wire);
+  assert.equal(decoded.game.career.objectiveWeek, 1);
+  assert.deepEqual(decoded.game.career.protectedOrderIds, ['ord_1', 'ord_2']);
+  assert.deepEqual(decoded.game.career.earningsHeldTickers, ['HLVG']);
+  assert.ok(decoded.game.career.objectives.every((objective) => !objective.completed));
+
+  // A v1 save written before G4 has none of the three tracking fields.
+  const oldWire = structuredClone(wire);
+  delete oldWire.game.career.objectiveWeek;
+  delete oldWire.game.career.protectedOrderIds;
+  delete oldWire.game.career.earningsHeldTickers;
+  // The ids already encode a later week; import must recover it without the field.
+  oldWire.game.simDay = 6;
+  oldWire.game.career.objectives = oldWire.game.career.objectives.map((objective, index) => ({
+    ...objective,
+    id: `obj_2_${index + 1}`,
+  }));
+  const oldDecoded = SaveGameSchema.decode(oldWire);
+  assert.deepEqual(wireOf(oldDecoded), oldWire, 'loading an old save must not invent tracking fields');
+
+  const restored = new MarketSimulationEngine(oldDecoded.seed, 140000);
+  restored.importState(oldDecoded.game);
+  const career = restored.exportState().career;
+  assert.equal(career.reputation, 0);
+  assert.equal(career.currentRankIndex, 0);
+  assert.equal(career.objectiveWeek, 2, 'the week is inferred from legacy objective ids');
+  assert.deepEqual(career.objectives.map((objective) => objective.id), ['obj_2_1', 'obj_2_2', 'obj_2_3']);
+  assert.ok(career.objectives.every((objective) => !objective.completed));
+
+  // Loading at a later sim day rotates forward from the inferred week.
+  const later = structuredClone(oldDecoded.game);
+  later.simDay = 11;
+  const resumed = new MarketSimulationEngine(oldDecoded.seed, 140000);
+  resumed.importState(later);
+  const rotated = resumed.exportState().career;
+  assert.equal(rotated.objectiveWeek, 3);
+  assert.deepEqual(rotated.objectives.map((objective) => objective.id), ['obj_3_1', 'obj_3_2', 'obj_3_3']);
+  assert.equal(rotated.reputation, 0);
+});
+
 test('corrupted or tampered payloads are rejected without crashing', () => {
   const engine = new MarketSimulationEngine('CORRUPT', 100000);
   for (let i = 0; i < 5; i++) engine.tick(100);

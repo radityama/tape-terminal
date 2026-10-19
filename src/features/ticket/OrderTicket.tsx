@@ -39,14 +39,24 @@ export function OrderTicket() {
   const isShortUnlocked = (career?.rank?.order ?? 1) >= 2;
   // Margin unlock check (rank order >= 3)
   const isMarginUnlocked = (career?.rank?.order ?? 1) >= 3;
+  // Rank 1 accounts can still close a long position even while shorts stay locked.
+  const heldShares = snapshot?.positions.find((p) => p.ticker === selectedTicker)?.shares ?? 0;
+  const canSell = isShortUnlocked || heldShares > 0;
+  const activeSide: OrderSide = canSell ? side : 'buy';
+  // A locked-short account can only sell the long shares it owns.
+  const orderQuantity = activeSide === 'sell' && !isShortUnlocked
+    ? Math.min(quantity, Math.max(1, Math.floor(heldShares)))
+    : quantity;
+  // Closing a long must not leave inverse buy brackets that could reopen it.
+  const bracketAvailable = !(activeSide === 'sell' && orderQuantity <= Math.max(0, heldShares));
 
   // Pre-trade calculation
   const preTrade = useMemo(() => {
-    const qty = Math.max(1, quantity || 1);
+    const qty = Math.max(1, orderQuantity || 1);
     let basePrice = currentPrice;
 
     if (depth) {
-      basePrice = side === 'buy' ? depth.bestAsk : depth.bestBid;
+      basePrice = activeSide === 'buy' ? depth.bestAsk : depth.bestBid;
     }
 
     // Estimate fill price with book walk
@@ -58,7 +68,7 @@ export function OrderTicket() {
       estFillPrice = parseFloat(limitPrice);
     } else if (depth) {
       // Simulate fill with depth ladder
-      const levels = side === 'buy' ? depth.asks : depth.bids;
+      const levels = activeSide === 'buy' ? depth.asks : depth.bids;
       let rem = qty;
       let accum = 0;
       for (const lvl of levels) {
@@ -69,7 +79,7 @@ export function OrderTicket() {
       }
       if (rem > 0) {
         const last = levels[levels.length - 1];
-        accum += rem * (side === 'buy' ? last.price + depth.spread : Math.max(0.01, last.price - depth.spread));
+        accum += rem * (activeSide === 'buy' ? last.price + depth.spread : Math.max(0.01, last.price - depth.spread));
       }
       estFillPrice = Math.round((accum / qty) * 100) / 100;
       estSlippageDollars = Math.abs(estFillPrice - basePrice);
@@ -86,7 +96,7 @@ export function OrderTicket() {
     const currentCash = risk?.cashBalance || 100000;
     const currentBuyingPower = risk?.buyingPower || 100000;
 
-    const resultingCash = side === 'buy' ? currentCash - totalTradeCost : currentCash + (qty * estFillPrice) - estCommission;
+    const resultingCash = activeSide === 'buy' ? currentCash - totalTradeCost : currentCash + (qty * estFillPrice) - estCommission;
     const resultingBuyingPower = Math.max(0, currentBuyingPower - totalTradeCost);
     const positionFraction = currentEquity > 0 ? (totalTradeCost / currentEquity) * 100 : 0;
     const isLargeOrder = positionFraction >= 25;
@@ -101,11 +111,15 @@ export function OrderTicket() {
       resultingBuyingPower,
       positionFraction,
       isLargeOrder,
-      hasSufficientBuyingPower: side === 'sell' || totalTradeCost <= currentBuyingPower,
+      hasSufficientBuyingPower: activeSide === 'sell' || totalTradeCost <= currentBuyingPower,
     };
-  }, [quantity, side, orderType, limitPrice, currentPrice, depth, risk]);
+  }, [orderQuantity, activeSide, orderType, limitPrice, currentPrice, depth, risk]);
 
   const handleQuickQty = (percent: number) => {
+    if (activeSide === 'sell' && !isShortUnlocked) {
+      setQuantity(Math.max(1, Math.floor((heldShares * percent) / 100)));
+      return;
+    }
     const bp = risk?.buyingPower || 10000;
     const maxAffordable = Math.floor(bp / (currentPrice * 1.01));
     const target = Math.max(1, Math.floor(maxAffordable * (percent / 100)));
@@ -126,14 +140,14 @@ export function OrderTicket() {
     const lPrice = limitPrice ? parseFloat(limitPrice) : undefined;
     const sPrice = stopPrice ? parseFloat(stopPrice) : undefined;
     const tAmount = trailingAmount ? parseFloat(trailingAmount) : undefined;
-    const tp = hasBracket && takeProfitPrice ? parseFloat(takeProfitPrice) : undefined;
-    const sl = hasBracket && stopLossPrice ? parseFloat(stopLossPrice) : undefined;
+    const tp = hasBracket && bracketAvailable && takeProfitPrice ? parseFloat(takeProfitPrice) : undefined;
+    const sl = hasBracket && bracketAvailable && stopLossPrice ? parseFloat(stopLossPrice) : undefined;
 
     placeOrder({
       ticker: selectedTicker,
-      side,
+      side: activeSide,
       type: orderType,
-      quantity,
+      quantity: orderQuantity,
       limitPrice: lPrice,
       stopPrice: sPrice,
       trailingAmount: tAmount,
@@ -161,7 +175,7 @@ export function OrderTicket() {
           <button
             onClick={() => setSide('buy')}
             className={`py-1 text-center font-bold font-mono text-[11px] rounded-[2px] transition-colors cursor-pointer ${
-              side === 'buy'
+              activeSide === 'buy'
                 ? 'bg-[var(--up)] text-black'
                 : 'text-[var(--text-3)] hover:text-[var(--text-1)]'
             }`}
@@ -170,20 +184,20 @@ export function OrderTicket() {
           </button>
           <button
             onClick={() => {
-              if (!isShortUnlocked) return;
+              if (!canSell) return;
               setSide('sell');
             }}
-            disabled={!isShortUnlocked}
+            disabled={!canSell}
             className={`py-1 text-center font-bold font-mono text-[11px] rounded-[2px] transition-colors cursor-pointer ${
-              side === 'sell'
+              activeSide === 'sell'
                 ? 'bg-[var(--down)] text-white'
-                : !isShortUnlocked
+                : !canSell
                 ? 'text-[var(--text-3)] opacity-40 cursor-not-allowed'
                 : 'text-[var(--text-3)] hover:text-[var(--text-1)]'
             }`}
-            title={!isShortUnlocked ? 'Short selling unlocks at Rank 2 (Junior Trader)' : undefined}
+            title={!canSell ? 'Short selling unlocks at Rank 2 (Junior Trader); you have no long position to close' : undefined}
           >
-            SELL {!isShortUnlocked ? '(LOCKED)' : '/ SHORT'}
+            SELL {!canSell ? '(LOCKED)' : isShortUnlocked ? '/ SHORT' : '/ CLOSE'}
           </button>
         </div>
 
@@ -228,16 +242,23 @@ export function OrderTicket() {
               Quantity (Shares)
             </label>
             <span className="text-[10px] font-mono text-[var(--text-3)]">
-              Max: {Math.floor((risk?.buyingPower || 10000) / currentPrice)} shs
+              Max: {Math.floor(activeSide === 'sell' && !isShortUnlocked
+                ? heldShares
+                : (risk?.buyingPower || 10000) / currentPrice)} shs
             </span>
           </div>
 
           <input
             type="number"
             min={1}
-            max={100000}
+            max={activeSide === 'sell' && !isShortUnlocked ? Math.max(1, Math.floor(heldShares)) : 100000}
             value={quantity}
-            onChange={(e) => setQuantity(Math.max(1, parseInt(e.target.value) || 1))}
+            onChange={(e) => {
+              const next = Math.max(1, parseInt(e.target.value) || 1);
+              setQuantity(activeSide === 'sell' && !isShortUnlocked
+                ? Math.min(next, Math.max(1, Math.floor(heldShares)))
+                : next);
+            }}
             className="w-full h-[28px] bg-[var(--bg-0)] border border-[var(--line)] rounded-[2px] px-2 font-mono text-[13px] text-[var(--text-1)] outline-none focus:border-[var(--accent)] text-right"
           />
 
@@ -304,7 +325,8 @@ export function OrderTicket() {
           </div>
         )}
 
-        {/* Bracket Order Option */}
+        {/* Bracket orders only attach to entries; inverse exits could reopen the position. */}
+        {bracketAvailable && (
         <div className="pt-1 border-t border-[var(--line)]">
           <label className="flex items-center space-x-2 cursor-pointer mb-2">
             <input
@@ -350,7 +372,7 @@ export function OrderTicket() {
             </div>
           )}
         </div>
-
+        )}
         {/* Pre-Trade Execution Transparency Breakdown */}
         <div className="bg-[var(--bg-0)] border border-[var(--line)] rounded-[2px] p-2 space-y-1.5 font-mono text-[11px]">
           <div className="flex justify-between text-[var(--text-3)] text-[10px] uppercase border-b border-[var(--line)] pb-1">
@@ -401,12 +423,12 @@ export function OrderTicket() {
             className={`w-full py-2 rounded-[2px] font-mono font-bold text-[12px] uppercase tracking-wide transition-all cursor-pointer ${
               !preTrade.hasSufficientBuyingPower
                 ? 'bg-[var(--line)] text-[var(--text-3)] cursor-not-allowed'
-                : side === 'buy'
+                : activeSide === 'buy'
                 ? 'bg-[var(--up)] text-black hover:brightness-105 active:translate-y-[1px]'
                 : 'bg-[var(--down)] text-white hover:brightness-105 active:translate-y-[1px]'
             }`}
           >
-            {preTrade.hasSufficientBuyingPower ? `Place ${side.toUpperCase()} Order` : 'Insufficient Buying Power'}
+            {preTrade.hasSufficientBuyingPower ? `Place ${activeSide.toUpperCase()} Order` : 'Insufficient Buying Power'}
           </button>
         </div>
       </div>
@@ -422,7 +444,7 @@ export function OrderTicket() {
               This order allocates <span className="font-mono font-bold text-[var(--text-1)]">{preTrade.positionFraction.toFixed(1)}%</span> of your total net account equity into <span className="font-mono font-bold text-[var(--text-1)]">{selectedTicker}</span>.
             </p>
             <div className="bg-[var(--bg-0)] p-2 rounded-[2px] font-mono text-[11px] space-y-1">
-              <div>Shares: {quantity} shs</div>
+              <div>Shares: {orderQuantity} shs</div>
               <div>Estimated Total: ${preTrade.totalTradeCost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
               <div>Estimated Fill: ${preTrade.estFillPrice.toFixed(2)}</div>
             </div>

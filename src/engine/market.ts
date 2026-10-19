@@ -202,6 +202,9 @@ export class MarketSimulationEngine {
     // Restore the RNG counter last: rebuilding the derived depth cache above consumes draws.
     this.rng.setState(state.rngState);
     this.actionSeq = typeof state.actionSeq === 'number' ? state.actionSeq : 0;
+    // A restored save may predate weekly tracking or have been paused on a later week.
+    this.careerEngine.syncObjectives(this.simDay);
+    this.careerEngine.evaluateSectors(this.currentSectors());
   }
 
   setCallbacks(cbs: {
@@ -336,6 +339,10 @@ export class MarketSimulationEngine {
 
   // Step the simulation tick by deltaTimeSec
   tick(realDeltaSeconds: number) {
+    // Pausing must not freeze objectives on an old week or ignore carried holdings.
+    this.careerEngine.syncObjectives(this.simDay);
+    this.careerEngine.evaluateSectors(this.currentSectors());
+
     if (this.speed === 0) return;
 
     // Time scaling: 65 sim seconds per real second at 1x
@@ -437,6 +444,16 @@ export class MarketSimulationEngine {
     }
   }
 
+  private currentSectors(): string[] {
+    const sectors = new Set<string>();
+    for (const position of this.portfolioEngine.getPositions()) {
+      if (!position.shares) continue;
+      const company = COMPANY_MAP.get(position.ticker);
+      if (company) sectors.add(company.sector);
+    }
+    return [...sectors];
+  }
+
   private evaluateOrder(order: Order, depth: OrderBookDepth, currentPrice: number) {
     const fillResult = this.matchingEngine.evaluatePendingOrder(order, depth, currentPrice);
     if (!fillResult || !fillResult.shouldFill) return;
@@ -476,6 +493,15 @@ export class MarketSimulationEngine {
       if (ach && this.onAchievementCallback) {
         this.onAchievementCallback(ach);
       }
+
+      this.careerEngine.recordFill({
+        orderId: order.id,
+        ticker: order.ticker,
+        realizedPnl: fillRes.tradeRecord.realizedPnl,
+        isClosingTrade: fillRes.tradeRecord.isClosingTrade,
+        stopProtected: order.stopLossPrice !== undefined,
+        sectors: this.currentSectors(),
+      });
 
       // If bracket child orders are attached, spawn them
       if (order.takeProfitPrice && order.takeProfitPrice > 0) {
@@ -525,6 +551,8 @@ export class MarketSimulationEngine {
       if (earn.ticker) {
         this.activeJumpDeltas.set(earn.ticker, earn.trueImpact);
         this.activeNews.unshift(earn);
+        const position = this.portfolioEngine.getPosition(earn.ticker);
+        if (position && position.shares !== 0) this.careerEngine.markEarningsHeld([earn.ticker]);
       }
     }
 
@@ -576,6 +604,8 @@ export class MarketSimulationEngine {
     // Reset clock for next trading day
     this.simDay += 1;
     this.actionSeq += 1;
+    this.careerEngine.syncObjectives(this.simDay);
+    this.careerEngine.evaluateSectors(this.currentSectors());
     this.simSecondsOfDay = 9.5 * 3600; // 09:30:00
     this.pricingEngine.startNewDay(Math.floor(Date.now() / 1000));
     this.portfolioEngine.resetDayStartEquity(risk.netLiquidationValue);
