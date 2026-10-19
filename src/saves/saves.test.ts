@@ -85,6 +85,32 @@ test('same seed and same actions reproduce identical state after save and load',
   );
 });
 
+test('v1 saves keep historical risk fields and wire values while restored equity uses marked value once', () => {
+  const engine = new MarketSimulationEngine('G1_LEGACY_EQUITY', 10000);
+  const state = engine.exportState();
+  state.portfolio.cash = '9000';
+  state.portfolio.positions = [{
+    ticker: 'HLVG', shares: 10, averageEntryPrice: 100, currentPrice: 110,
+    marketValue: 1100, costBasis: 1000, unrealizedPnl: 100,
+    unrealizedPnlPercent: 10, entryTimestamp: 1000, borrowFeeAccumulated: 0,
+  }];
+  state.portfolio.peakEquity = '10200';
+  state.portfolio.maxDrawdownPercent = 5;
+  engine.importState(state);
+  const save = makeSave(engine, 'G1_LEGACY_EQUITY');
+  assert.equal(save.summary.equity, 10100, 'new save summaries use corrected marked equity');
+  save.summary.equity = 10200; // Historical summary from the double-counted accounting rule.
+  const wire = wireOf(save);
+  const decoded = SaveGameSchema.decode(wire);
+  assert.deepEqual(wireOf(decoded), wire, 'reading the v1 wire format must not rewrite its original fields');
+
+  const restored = new MarketSimulationEngine(decoded.seed, 10000);
+  restored.importState(decoded.game);
+  assert.deepEqual(restored.exportState().portfolio, decoded.game.portfolio, 'historical peak and drawdown are preserved, not guessed');
+  assert.equal(restored.getSnapshot().riskMetrics.netLiquidationValue, 10100);
+  assert.equal(restored.exportState().portfolio.peakEquity, '10200');
+});
+
 test('legacy invalid pending orders remain recoverable but cannot fill after import', () => {
   const engine = new MarketSimulationEngine('G0_LEGACY_ORDER', 100000);
   const placed = engine.placeOrder({ ticker: 'HLVG', side: 'buy', type: 'limit', quantity: 2, limitPrice: 100000 });

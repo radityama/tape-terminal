@@ -328,6 +328,8 @@ export class PortfolioEngine {
       }
     }
 
+    this.updateMarketPrices(new Map([[ticker, price]]));
+
     const tradeRecord: TradeRecord = {
       id: `trade_${timestamp}_${Math.random().toString(36).substring(2, 6)}`,
       orderId,
@@ -374,7 +376,6 @@ export class PortfolioEngine {
   calculateRiskMetrics(companyMap: Map<string, Company>): RiskMetrics {
     let totalLongValue = 0;
     let totalShortValue = 0;
-    let totalUnrealizedPnl = 0;
     let weightedBetaSum = 0;
 
     const sectorValues = new Map<Sector, number>();
@@ -396,8 +397,6 @@ export class PortfolioEngine {
         weightedBetaSum -= pos.marketValue * beta; // short reduces positive market beta
       }
 
-      totalUnrealizedPnl += pos.unrealizedPnl;
-
       // Sector aggregation
       const curSectorVal = sectorValues.get(sector) || 0;
       sectorValues.set(sector, curSectorVal + pos.marketValue);
@@ -409,7 +408,7 @@ export class PortfolioEngine {
       }
     }
 
-    const netLiquidationValue = Math.round((this.cash.toNumber() + totalLongValue - totalShortValue + totalUnrealizedPnl) * 100) / 100;
+    const netLiquidationValue = Math.round((this.cash.toNumber() + totalLongValue - totalShortValue) * 100) / 100;
     const totalMarketExposure = Math.round((totalLongValue + totalShortValue) * 100) / 100;
 
     // Margin maintenance requirement: 25% of gross market exposure
