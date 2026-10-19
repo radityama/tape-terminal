@@ -133,6 +133,28 @@ test('a legacy stop-limit without trigger state is treated as untriggered, never
   assert.equal(openOrder(restored)?.stopTriggered, true, 'the current tick evaluates the stop normally');
 });
 
+test('the trigger transition notifies persistence exactly once', () => {
+  const engine = new MarketSimulationEngine('G8_TRIGGER_CALLBACK', 100000);
+  let notifications = 0;
+  engine.setCallbacks({
+    onOrderTriggered: (order) => {
+      notifications += 1;
+      assert.equal(order.stopTriggered, true);
+    },
+  });
+  const placed = engine.placeOrder({
+    ticker: 'HLVG', side: 'buy', type: 'stop_limit', quantity: 2,
+    stopPrice: 1, limitPrice: 100, timeInForce: 'GTC',
+  });
+  assert.equal(placed.success, true);
+
+  engine.tick(0.05);
+  assert.equal(notifications, 1);
+  engine.tick(0.05);
+  assert.equal(notifications, 1, 'repeated ticks do not re-notify a latched stop');
+  assert.equal(openOrder(engine, placed.orderId)?.stopTriggered, true);
+});
+
 test('a DAY stop-limit that only triggered expires at the day boundary', () => {
   const engine = new MarketSimulationEngine('G8_DAY', 100000);
   const placed = engine.placeOrder({
