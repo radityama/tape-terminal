@@ -202,6 +202,9 @@ export class MarketSimulationEngine {
     // Restore the RNG counter last: rebuilding the derived depth cache above consumes draws.
     this.rng.setState(state.rngState);
     this.actionSeq = typeof state.actionSeq === 'number' ? state.actionSeq : 0;
+    // A restored save may predate weekly tracking or have been paused on a later week.
+    this.careerEngine.syncObjectives(this.simDay);
+    this.careerEngine.evaluateSectors(this.currentSectors());
   }
 
   setCallbacks(cbs: {
@@ -336,10 +339,11 @@ export class MarketSimulationEngine {
 
   // Step the simulation tick by deltaTimeSec
   tick(realDeltaSeconds: number) {
-    if (this.speed === 0) return;
-
-    // A loaded legacy save may be on a later week than its stored objectives.
+    // Pausing must not freeze objectives on an old week or ignore carried holdings.
     this.careerEngine.syncObjectives(this.simDay);
+    this.careerEngine.evaluateSectors(this.currentSectors());
+
+    if (this.speed === 0) return;
 
     // Time scaling: 65 sim seconds per real second at 1x
     const simDeltaSeconds = realDeltaSeconds * 65 * this.speed;
@@ -601,6 +605,7 @@ export class MarketSimulationEngine {
     this.simDay += 1;
     this.actionSeq += 1;
     this.careerEngine.syncObjectives(this.simDay);
+    this.careerEngine.evaluateSectors(this.currentSectors());
     this.simSecondsOfDay = 9.5 * 3600; // 09:30:00
     this.pricingEngine.startNewDay(Math.floor(Date.now() / 1000));
     this.portfolioEngine.resetDayStartEquity(risk.netLiquidationValue);

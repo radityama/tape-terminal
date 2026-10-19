@@ -225,6 +225,12 @@ test('career progress tracking round trips and old saves load without invented c
   delete oldWire.game.career.objectiveWeek;
   delete oldWire.game.career.protectedOrderIds;
   delete oldWire.game.career.earningsHeldTickers;
+  // The ids already encode a later week; import must recover it without the field.
+  oldWire.game.simDay = 6;
+  oldWire.game.career.objectives = oldWire.game.career.objectives.map((objective, index) => ({
+    ...objective,
+    id: `obj_2_${index + 1}`,
+  }));
   const oldDecoded = SaveGameSchema.decode(oldWire);
   assert.deepEqual(wireOf(oldDecoded), oldWire, 'loading an old save must not invent tracking fields');
 
@@ -233,7 +239,19 @@ test('career progress tracking round trips and old saves load without invented c
   const career = restored.exportState().career;
   assert.equal(career.reputation, 0);
   assert.equal(career.currentRankIndex, 0);
+  assert.equal(career.objectiveWeek, 2, 'the week is inferred from legacy objective ids');
+  assert.deepEqual(career.objectives.map((objective) => objective.id), ['obj_2_1', 'obj_2_2', 'obj_2_3']);
   assert.ok(career.objectives.every((objective) => !objective.completed));
+
+  // Loading at a later sim day rotates forward from the inferred week.
+  const later = structuredClone(oldDecoded.game);
+  later.simDay = 11;
+  const resumed = new MarketSimulationEngine(oldDecoded.seed, 140000);
+  resumed.importState(later);
+  const rotated = resumed.exportState().career;
+  assert.equal(rotated.objectiveWeek, 3);
+  assert.deepEqual(rotated.objectives.map((objective) => objective.id), ['obj_3_1', 'obj_3_2', 'obj_3_3']);
+  assert.equal(rotated.reputation, 0);
 });
 
 test('corrupted or tampered payloads are rejected without crashing', () => {

@@ -174,7 +174,6 @@ export class CareerEngine {
     if (week <= this.objectiveWeek) return;
     this.objectiveWeek = week;
     this.protectedOrderIds = [];
-    this.earningsHeldTickers = [];
     this.objectives = this.generateObjectivesForWeek(week);
   }
 
@@ -216,16 +215,22 @@ export class CareerEngine {
       if (protectedCount >= 3) this.completeObjective(1, `${protectedCount} of 3 stop orders set`);
     }
 
-    if (event.isClosingTrade && (event.realizedPnl ?? 0) > 0 && this.earningsHeldTickers.includes(event.ticker)) {
-      this.completeObjective(2, '1 of 1 earnings trades completed');
+    if (event.isClosingTrade && this.earningsHeldTickers.includes(event.ticker)) {
+      if ((event.realizedPnl ?? 0) > 0) this.completeObjective(2, '1 of 1 earnings trades completed');
+      // The earnings event has been traded; a later re-entry is not the same hold.
+      this.earningsHeldTickers = this.earningsHeldTickers.filter((ticker) => ticker !== event.ticker);
     }
 
-    const sectorCount = new Set(event.sectors).size;
+    this.evaluateSectors(event.sectors);
+  }
+
+  /** Keep the diversity objective current even when holdings change weeks without a fill. */
+  evaluateSectors(sectors: string[]) {
+    const sectorCount = Math.min(3, new Set(sectors).size);
     const sectorObjective = this.objectives.find((o) => o.id.endsWith('_3'));
-    if (sectorObjective && !sectorObjective.completed) {
-      sectorObjective.progressText = `${Math.min(3, sectorCount)} of 3 sectors held`;
-      if (sectorCount >= 3) this.completeObjective(3, `${Math.min(3, sectorCount)} of 3 sectors held`);
-    }
+    if (!sectorObjective || sectorObjective.completed) return;
+    sectorObjective.progressText = `${sectorCount} of 3 sectors held`;
+    if (sectorCount >= 3) this.completeObjective(3, `${sectorCount} of 3 sectors held`);
   }
 
   getCurrentRank(): CareerRankDefinition {

@@ -779,7 +779,80 @@ test('career ranks beyond Junior Trader unlock margin and weekly objectives rota
   assert.deepEqual(career.objectives.map((objective) => objective.id), ['obj_2_1', 'obj_2_2', 'obj_2_3']);
   assert.ok(career.objectives.every((objective) => !objective.completed));
   assert.deepEqual(career.protectedOrderIds, []);
-  assert.deepEqual(career.earningsHeldTickers, []);
+  assert.deepEqual(career.earningsHeldTickers, ['HLVG'], 'a hold that spans the week boundary stays eligible until closed');
+
+  // The earnings hold closes in week 2 and pays the new week's objective once.
+  assert.equal(engine.placeOrder({ ticker: 'HLVG', side: 'buy', type: 'market', quantity: 1 }).success, true);
+  const closingState = engine.exportState();
+  const closingPosition = closingState.portfolio.positions.find((position) => position.ticker === 'HLVG')!;
+  closingPosition.averageEntryPrice = 0.01;
+  closingPosition.costBasis = 0.01;
+  engine.importState(closingState);
+  assert.equal(engine.placeOrder({ ticker: 'HLVG', side: 'sell', type: 'market', quantity: 1 }).success, true);
+  const afterClose = engine.exportState().career;
+  assert.equal(afterClose.reputation, 300, 'the week-2 earnings objective awards its 50 points once');
+  assert.equal(afterClose.objectives.find((objective) => objective.id.endsWith('_2'))?.completed, true);
+  assert.deepEqual(afterClose.earningsHeldTickers, []);
+});
+
+test('a losing close consumes an earnings hold so later re-entry cannot farm the objective', () => {
+  const engine = new MarketSimulationEngine('G4_LOSS', 140000);
+  assert.equal(engine.placeOrder({ ticker: 'HLVG', side: 'buy', type: 'market', quantity: 1 }).success, true);
+  const heldState = engine.exportState();
+  heldState.career.earningsHeldTickers = ['HLVG'];
+  const losingPosition = heldState.portfolio.positions.find((position) => position.ticker === 'HLVG')!;
+  losingPosition.averageEntryPrice = 100000;
+  losingPosition.costBasis = 100000;
+  engine.importState(heldState);
+  const reputationBefore = engine.exportState().career.reputation;
+
+  assert.equal(engine.placeOrder({ ticker: 'HLVG', side: 'sell', type: 'market', quantity: 1 }).success, true);
+  let career = engine.exportState().career;
+  assert.deepEqual(career.earningsHeldTickers, [], 'a losing close still ends that earnings hold');
+  assert.notEqual(career.objectives.find((objective) => objective.id.endsWith('_2'))?.completed, true);
+  assert.equal(career.reputation, reputationBefore);
+
+  // Re-entering the same ticker is a new position and must not inherit the hold.
+  assert.equal(engine.placeOrder({ ticker: 'HLVG', side: 'buy', type: 'market', quantity: 1 }).success, true);
+  const reentry = engine.exportState();
+  const reentryPosition = reentry.portfolio.positions.find((position) => position.ticker === 'HLVG')!;
+  reentryPosition.averageEntryPrice = 0.01;
+  reentryPosition.costBasis = 0.01;
+  engine.importState(reentry);
+  assert.equal(engine.placeOrder({ ticker: 'HLVG', side: 'sell', type: 'market', quantity: 1 }).success, true);
+  career = engine.exportState().career;
+  assert.notEqual(career.objectives.find((objective) => objective.id.endsWith('_2'))?.completed, true);
+  assert.equal(career.reputation, reputationBefore);
+});
+
+test('carried sector holdings complete the objective after loading or while paused', () => {
+  const engine = new MarketSimulationEngine('G4_SECTORS', 140000);
+  for (const ticker of ['HLVG', 'BWTR', 'KNRG']) {
+    assert.equal(engine.placeOrder({ ticker, side: 'buy', type: 'market', quantity: 1 }).success, true);
+  }
+  const state = engine.exportState();
+  state.simDay = 6;
+  state.career.objectiveWeek = 2;
+  state.career.reputation = 0;
+  state.career.objectives = state.career.objectives.map((objective, index) => ({
+    ...objective,
+    id: `obj_2_${index + 1}`,
+    completed: false,
+    progressText: 'pending',
+  }));
+
+  const restored = new MarketSimulationEngine('G4_SECTORS', 140000);
+  restored.importState(state);
+  let career = restored.exportState().career;
+  assert.equal(career.objectives.find((objective) => objective.id === 'obj_2_3')?.completed, true);
+  assert.equal(career.reputation, 40);
+
+  // A paused engine must not lose or repeat the carried exposure check.
+  restored.setSpeed(0);
+  restored.tick(0.5);
+  career = restored.exportState().career;
+  assert.equal(career.objectives.find((objective) => objective.id === 'obj_2_3')?.completed, true);
+  assert.equal(career.reputation, 40);
 });
 
 test('Margin cushion and forced liquidation trigger on maintenance breach', () => {
