@@ -444,6 +444,22 @@ test('same-tick legacy buys compete deterministically across tickers without ove
   assert.deepEqual(results[0], results[1]);
 });
 
+test('saved order sequence breaks ties when two pending buys have the same creation time', () => {
+  const source = new MarketSimulationEngine('G2_SAME_AGE', 1000);
+  const first = source.placeOrder({ ticker: 'HLVG', side: 'buy', type: 'limit', quantity: 5, limitPrice: 180 });
+  assert.equal(first.success, true);
+  const state = source.exportState();
+  state.openOrders.push({ ...state.openOrders[0], id: 'legacy_vcrx', ticker: 'VCRX' });
+  const restored = new MarketSimulationEngine(state.seed, 1000);
+  restored.importState(state);
+  restored.tick(0.05);
+  const after = restored.exportState();
+  assert.equal(after.portfolio.positions.find((position) => position.ticker === 'HLVG')?.shares, 5);
+  assert.equal(after.portfolio.positions.find((position) => position.ticker === 'VCRX'), undefined);
+  assert.deepEqual(after.openOrders.map((order) => order.id), ['legacy_vcrx']);
+  assert.equal(after.portfolio.tradeHistory.length, 1);
+});
+
 test('own reservation is not charged again when a pending buy fills after a market buy', () => {
   const engine = new MarketSimulationEngine('G2_OWN_RESERVE', 700);
   assert.equal(engine.placeOrder({ ticker: 'HLVG', side: 'buy', type: 'limit', quantity: 3, limitPrice: 180 }).success, true);
