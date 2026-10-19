@@ -199,7 +199,7 @@ test('short-position brackets cover the short and cancel the opposing exit', () 
   assert.equal(after.portfolio.tradeHistory[0].orderId, `${entry.orderId}_sl`);
 });
 
-test('a rejected linked exit is removed without cash, position or commission mutation', () => {
+test('an oversize linked exit is rejected without opening a short or charging commission', () => {
   const engine = new MarketSimulationEngine('G5_REJECTED_EXIT', 100000);
   const entry = engine.placeOrder({ ...ENTRY, takeProfitPrice: 0.01, stopLossPrice: 0.01 });
   assert.equal(entry.success, true);
@@ -212,6 +212,9 @@ test('a rejected linked exit is removed without cash, position or commission mut
   takeProfit.status = 'pending';
   takeProfit.filledQuantity = 0;
   takeProfit.quantity = 2;
+  // Even with shorting unlocked the linked exit cannot flip the book.
+  state.portfolio.shortingUnlocked = true;
+  state.portfolio.marginUnlocked = true;
   const restored = new MarketSimulationEngine(state.seed, 100000);
   restored.importState(state);
   const before = restored.exportState();

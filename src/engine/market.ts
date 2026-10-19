@@ -478,6 +478,22 @@ export class MarketSimulationEngine {
     if (!fillResult || !fillResult.shouldFill) return;
 
     const remainingShares = order.quantity - order.filledQuantity;
+
+    // A linked exit may only close the position it was created for. This also protects
+    // unlocked-short accounts from a stale or imported oversize leg flipping the book.
+    if (order.isBracketChild) {
+      const position = this.portfolioEngine.getPosition(order.ticker)?.shares ?? 0;
+      const closesPosition = position > 0 ? order.side === 'sell'
+        : position < 0 ? order.side === 'buy' : false;
+      if (!closesPosition || remainingShares > Math.abs(position)) {
+        order.status = 'rejected';
+        this.openOrders.delete(order.id);
+        this.actionSeq += 1;
+        this.reconcileBracketOrders(order.ticker);
+        return;
+      }
+    }
+
     const commission = this.matchingEngine.calculateCommission(remainingShares, fillResult.fillPrice);
     if (order.side === 'buy') {
       const coveredShares = new Map<string, number>();
