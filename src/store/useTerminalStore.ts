@@ -535,6 +535,10 @@ function wireEngine(engine: MarketSimulationEngine, get: () => TerminalState) {
         state.nextTutorialStep();
       }
     },
+    onOrderTriggered: () => {
+      // A stop-limit latch changes saved order state even when no fill occurs.
+      saveManager.notePlayerAction();
+    },
     onMarginCall: (explanation) => {
       get().addToast({
         title: 'Margin Call Forced Liquidation',

@@ -125,6 +125,7 @@ export class MarketSimulationEngine {
   private onTradeFillCallback?: (trade: TradeRecord) => void;
   private onMarginCallCallback?: (explanation: string) => void;
   private onAchievementCallback?: (ach: any) => void;
+  private onOrderTriggeredCallback?: (order: Order) => void;
 
   constructor(seed: string = 'TAPE_1337', startingBalance: number = 100000) {
     this.seed = seed;
@@ -212,11 +213,13 @@ export class MarketSimulationEngine {
     onTradeFill?: (trade: TradeRecord) => void;
     onMarginCall?: (explanation: string) => void;
     onAchievement?: (ach: any) => void;
+    onOrderTriggered?: (order: Order) => void;
   }) {
     this.onSnapshotCallback = cbs.onSnapshot;
     this.onTradeFillCallback = cbs.onTradeFill;
     this.onMarginCallCallback = cbs.onMarginCall;
     this.onAchievementCallback = cbs.onAchievement;
+    this.onOrderTriggeredCallback = cbs.onOrderTriggered;
   }
 
   // Place order into matching engine
@@ -484,7 +487,14 @@ export class MarketSimulationEngine {
 
   private evaluateOrder(order: Order, depth: OrderBookDepth, currentPrice: number) {
     if (!this.isLiveOrder(order)) return;
+    const wasStopTriggered = order.stopTriggered === true;
     const fillResult = this.matchingEngine.evaluatePendingOrder(order, depth, currentPrice);
+    if (!wasStopTriggered && order.stopTriggered === true) {
+      // Latching a stop-limit is durable order state and must advance the save sequence.
+      this.actionSeq += 1;
+      // A trigger often happens before any fill, so subscribers must be able to flush it.
+      this.onOrderTriggeredCallback?.({ ...order });
+    }
     if (!fillResult || !fillResult.shouldFill) return;
 
     const remainingShares = order.quantity - order.filledQuantity;
