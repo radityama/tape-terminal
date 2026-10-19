@@ -110,6 +110,27 @@ export class PortfolioEngine {
     return this.cash.toNumber();
   }
 
+  getBuyingPower(): number {
+    let longValue = 0;
+    let shortValue = 0;
+    for (const position of this.positions.values()) {
+      if (position.shares > 0) longValue += position.marketValue;
+      else shortValue += position.marketValue;
+    }
+    if (!this.marginUnlocked) return Math.round(Math.max(0, this.getCash() - shortValue) * 100) / 100;
+    return Math.round(Math.max(0, this.marginBuyingPower(this.getCash(), longValue, shortValue)) * 100) / 100;
+  }
+
+  // Shared by the displayed buying power and the pre-fill margin check so the two cannot diverge.
+  private marginBuyingPower(cash: number, longValue: number, shortValue: number): number {
+    const equity = Math.round((cash + longValue - shortValue) * 100) / 100;
+    return Math.round((2 * equity - longValue - shortValue) * 100) / 100;
+  }
+
+  isMarginUnlocked(): boolean {
+    return this.marginUnlocked;
+  }
+
   getStartingCapital(): number {
     return this.startingCapital.toNumber();
   }
@@ -184,6 +205,43 @@ export class PortfolioEngine {
     // A sell cannot exceed the long shares available while shorting is locked.
     if (side === 'sell' && !this.shortingUnlocked && shares > Math.max(existing?.shares ?? 0, 0)) {
       return { success: false, error: 'Short selling unlocks at Rank 2 (Junior Trader).' };
+    }
+    if (side === 'sell' && !this.marginUnlocked && shares > Math.max(0, existing?.shares ?? 0)) {
+      let shortValue = Math.max(0, shares - (existing?.shares ?? 0)) * price;
+      for (const position of this.positions.values()) {
+        if (position.ticker !== ticker && position.shares < 0) shortValue += position.marketValue;
+      }
+      if (Math.round((this.getCash() + notional - commission - shortValue) * 100) < 0) {
+        return { success: false, error: 'Insufficient buying power.' };
+      }
+    }
+    if (side === 'buy' && shares > Math.max(0, -(existing?.shares ?? 0))) {
+      const cashAfter = this.getCash() - notional - commission;
+      if (!this.marginUnlocked) {
+        let shortValue = Math.max(0, -((existing?.shares ?? 0) + shares)) * price;
+        for (const position of this.positions.values()) {
+          if (position.ticker !== ticker && position.shares < 0) shortValue += position.marketValue;
+        }
+        if (Math.round((cashAfter - shortValue) * 100) < 0) {
+          return { success: false, error: 'Insufficient buying power.' };
+        }
+      }
+    }
+    if (this.marginUnlocked && (side === 'buy'
+      ? shares > Math.max(0, -(existing?.shares ?? 0))
+      : shares > Math.max(0, existing?.shares ?? 0))) {
+      const cashAfter = this.getCash() + (side === 'buy' ? -notional : notional) - commission;
+      const projectedShares = (existing?.shares ?? 0) + (side === 'buy' ? shares : -shares);
+      let longValue = Math.max(0, projectedShares) * price;
+      let shortValue = Math.max(0, -projectedShares) * price;
+      for (const position of this.positions.values()) {
+        if (position.ticker === ticker) continue;
+        if (position.shares > 0) longValue += position.marketValue;
+        else shortValue += position.marketValue;
+      }
+      if (this.marginBuyingPower(cashAfter, longValue, shortValue) < 0) {
+        return { success: false, error: 'Insufficient buying power.' };
+      }
     }
 
     let isClosingTrade = false;
@@ -417,14 +475,8 @@ export class PortfolioEngine {
 
     // Available Buying Power:
     // With margin unlocked: max(0, 2 * max(0, NetLiquidation - totalMarketExposure * 0.5))
-    // Without margin: max(0, cash)
-    let buyingPower = 0;
-    if (this.marginUnlocked) {
-      const excessEquity = Math.max(0, netLiquidationValue - (totalMarketExposure * 0.50));
-      buyingPower = Math.round(excessEquity * 2 * 100) / 100;
-    } else {
-      buyingPower = Math.round(Math.max(0, this.cash.toNumber()) * 100) / 100;
-    }
+    // Without margin: cash less the marked liability securing any short positions.
+    const buyingPower = this.getBuyingPower();
 
     // Cushion = (NetLiquidation - MaintenanceRequirement) / max(1, MaintenanceRequirement)
     let marginCushionPercent = 100;
