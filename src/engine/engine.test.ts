@@ -310,6 +310,81 @@ test('portfolio rejects invalid internal fills without changing cash, positions 
   assert.deepEqual(portfolio.exportState(), before, 'rejected fill must preserve an existing position too');
 });
 
+test('locked shorting rejects an oversized sell before changing the portfolio', () => {
+  const portfolio = new PortfolioEngine(10000);
+  const fill = (side: 'buy' | 'sell', shares: number) => portfolio.executeFill({
+    orderId: `${side}_${shares}`, ticker: 'HLVG', side, shares, price: 100,
+    commission: 1.5, slippageDollars: 0, timestamp: 1000,
+  });
+
+  assert.equal(fill('buy', 10).success, true);
+  const before = portfolio.exportState();
+  assert.equal(fill('sell', 11).success, false);
+  assert.deepEqual(portfolio.exportState(), before);
+  assert.equal(fill('sell', 11).success, false);
+  assert.deepEqual(portfolio.exportState(), before, 'retries cannot charge a second commission or create a trade');
+  assert.equal(fill('sell', 4).success, true);
+  assert.equal(portfolio.getPosition('HLVG')?.shares, 6);
+  assert.equal(fill('sell', 6).success, true);
+  assert.equal(portfolio.getPosition('HLVG'), undefined);
+  const empty = portfolio.exportState();
+  assert.equal(fill('sell', 1).success, false);
+  assert.deepEqual(portfolio.exportState(), empty);
+});
+
+test('unlocked shorts can be increased, covered and reversed; locked restored shorts can only be covered', () => {
+  const portfolio = new PortfolioEngine(10000, true, true);
+  const fill = (target: PortfolioEngine, side: 'buy' | 'sell', shares: number) => target.executeFill({
+    orderId: `${side}_${shares}`, ticker: 'HLVG', side, shares, price: 100,
+    commission: 1.5, slippageDollars: 0, timestamp: 1000,
+  });
+
+  assert.equal(fill(portfolio, 'sell', 3).success, true);
+  assert.equal(fill(portfolio, 'sell', 2).success, true);
+  assert.equal(portfolio.getPosition('HLVG')?.shares, -5);
+  const saved = portfolio.exportState();
+  saved.shortingUnlocked = false;
+  const restored = new PortfolioEngine();
+  restored.importState(saved);
+  assert.deepEqual(restored.exportState(), saved, 'existing saved positions are not rewritten');
+  const before = restored.exportState();
+  assert.equal(fill(restored, 'sell', 1).success, false);
+  assert.deepEqual(restored.exportState(), before);
+  assert.equal(fill(restored, 'buy', 2).success, true);
+  assert.equal(restored.getPosition('HLVG')?.shares, -3);
+  assert.equal(fill(restored, 'buy', 4).success, true);
+  assert.equal(restored.getPosition('HLVG')?.shares, 1);
+  const reversed = restored.exportState();
+  assert.equal(fill(restored, 'sell', 2).success, false);
+  assert.deepEqual(restored.exportState(), reversed);
+
+  assert.equal(fill(portfolio, 'buy', 7).success, true);
+  assert.equal(portfolio.getPosition('HLVG')?.shares, 2);
+  assert.equal(fill(portfolio, 'sell', 4).success, true);
+  assert.equal(portfolio.getPosition('HLVG')?.shares, -2);
+});
+
+test('automatic bracket exits cannot sell beyond a locked long position', () => {
+  const engine = new MarketSimulationEngine('G3_BRACKET', 100000);
+  assert.equal(engine.placeOrder({ ticker: 'HLVG', side: 'buy', type: 'market', quantity: 2,
+    takeProfitPrice: 1, stopLossPrice: 100000 }).success, true);
+  assert.equal(engine.placeOrder({ ticker: 'HLVG', side: 'sell', type: 'market', quantity: 1 }).success, true);
+  const initial = engine.exportState();
+  assert.equal(initial.openOrders.length, 2);
+
+  engine.tick(0.05);
+  const after = engine.exportState();
+  assert.equal(after.portfolio.positions.find((position) => position.ticker === 'HLVG')?.shares, 1);
+  assert.equal(after.portfolio.cash, initial.portfolio.cash);
+  assert.equal(after.portfolio.tradeHistory.length, initial.portfolio.tradeHistory.length);
+  assert.equal(after.openOrders.length, 2, 'unlinked exits remain pending until G5 OCO work');
+  engine.tick(0.05);
+  assert.equal(engine.exportState().portfolio.cash, initial.portfolio.cash);
+  assert.equal(engine.exportState().portfolio.tradeHistory.length, after.portfolio.tradeHistory.length);
+  assert.equal(engine.exportState().portfolio.positions.find((position) => position.ticker === 'HLVG')?.shares, 1);
+  assert.equal(engine.exportState().openOrders.length, 2);
+});
+
 test('Margin cushion and forced liquidation trigger on maintenance breach', () => {
   // Margin unlocked: $100,000 capital, 2x leverage enabled
   const portfolio = new PortfolioEngine(100000, true, true);

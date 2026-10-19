@@ -2,6 +2,7 @@ import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { z } from 'zod';
 import { MarketSimulationEngine } from '../engine/market.ts';
+import { PortfolioEngine } from '../engine/portfolio.ts';
 import { COMPANY_MAP } from '../data/companies.ts';
 import { SaveGame, SaveGameSchema, SCHEMA_VERSION, decimalStringFromNumber, summarizeIssues } from './schema.ts';
 import { consumeSaveRepairs, migrate, SaveVersionError, rawSchemaVersion } from './migrations.ts';
@@ -158,6 +159,30 @@ test('a saved partial order retains its progress and only fills its residual qua
   restored.tick(0.05);
   assert.equal(restored.getSnapshot().recentTrades[0].shares, 3);
   assert.equal(restored.getSnapshot().positions.find((position) => position.ticker === 'VCRX')?.shares, 1000);
+});
+
+test('a saved short stays intact when shorting is locked and only covering can execute', () => {
+  const engine = new MarketSimulationEngine('G3_LEGACY_SHORT', 10000);
+  const short = new PortfolioEngine(10000, true, true);
+  assert.equal(short.executeFill({ orderId: 'existing', ticker: 'HLVG', side: 'sell', shares: 3,
+    price: 100, commission: 1.5, slippageDollars: 0, timestamp: 1000 }).success, true);
+  short.setUnlockedFeatures(false, false);
+  const save = makeSave(engine, 'G3_LEGACY_SHORT');
+  save.game.portfolio = short.exportState();
+  const wire = wireOf(save);
+  const loaded = SaveGameSchema.decode(wire);
+  assert.deepEqual(wireOf(loaded), wire);
+
+  const restored = new PortfolioEngine();
+  restored.importState(loaded.game.portfolio);
+  assert.deepEqual(restored.exportState(), loaded.game.portfolio);
+  const before = restored.exportState();
+  assert.equal(restored.executeFill({ orderId: 'increase', ticker: 'HLVG', side: 'sell', shares: 1,
+    price: 100, commission: 1.5, slippageDollars: 0, timestamp: 2000 }).success, false);
+  assert.deepEqual(restored.exportState(), before);
+  assert.equal(restored.executeFill({ orderId: 'cover', ticker: 'HLVG', side: 'buy', shares: 4,
+    price: 100, commission: 1.5, slippageDollars: 0, timestamp: 2000 }).success, true);
+  assert.equal(restored.getPosition('HLVG')?.shares, 1);
 });
 
 test('corrupted or tampered payloads are rejected without crashing', () => {
