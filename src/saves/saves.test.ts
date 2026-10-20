@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { z } from 'zod';
 import { MarketSimulationEngine } from '../engine/market.ts';
 import { PortfolioEngine } from '../engine/portfolio.ts';
+import { simMarketTimestamp } from '../engine/sim-time.ts';
 import { COMPANY_MAP } from '../data/companies.ts';
 import { SaveGame, SaveGameSchema, SCHEMA_VERSION, decimalStringFromNumber, summarizeIssues } from './schema.ts';
 import { consumeSaveRepairs, migrate, SaveVersionError, rawSchemaVersion } from './migrations.ts';
@@ -251,6 +252,35 @@ test('v1 save preserves the simulated-day trade cursor and legacy absence falls 
   const restored = new MarketSimulationEngine(legacy.seed, 100_000);
   restored.importState(legacy.game);
   assert.equal(restored.exportState().dayStartTradeCount, 2, 'legacy saves start from their full history length');
+});
+
+test('v1 save preserves simulated candle mode and resets legacy wall-clock bars', () => {
+  const engine = new MarketSimulationEngine('G7_SAVE_CANDLES', 100_000);
+  engine.tick(1);
+  const wire = wireOf(makeSave(engine, 'G7_SAVE_CANDLES'));
+  const pricing = (wire as unknown as {
+    game: { pricing: { candleTimeMode?: string; states: Array<{ candles1m: Array<Record<string, number>> }> } };
+  }).game.pricing;
+  assert.equal(pricing.candleTimeMode, 'sim');
+
+  const decoded = SaveGameSchema.decode(wire);
+  assert.equal(decoded.game.pricing.candleTimeMode, 'sim');
+  assert.deepEqual(wireOf(decoded), wire);
+
+  const cash = decoded.game.portfolio.cash;
+  delete pricing.candleTimeMode;
+  pricing.states[0].candles1m = [{ time: 1_700_000_000, open: 1, high: 1, low: 1, close: 1, volume: 123 }];
+  const legacy = SaveGameSchema.decode(wire);
+  const restored = new MarketSimulationEngine('G7_SAVE_CANDLES', 100_000);
+  restored.importState(legacy.game);
+  const state = restored.exportState();
+  assert.equal(state.pricing.states[0].candles1m.length, 1);
+  assert.equal(
+    state.pricing.states[0].candles1m[0].time,
+    simMarketTimestamp(legacy.game.simDay, Math.floor(legacy.game.simSecondsOfDay / 60) * 60),
+  );
+  assert.equal(state.pricing.states[0].candles1m[0].volume, 0);
+  assert.equal(state.portfolio.cash, cash);
 });
 
 test('v1 save preserves reversal closing commission while legacy trades stay loadable', () => {
