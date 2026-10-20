@@ -139,6 +139,10 @@ export class PortfolioEngine {
     return this.startingCapital.toNumber();
   }
 
+  getDayStartEquity(): number {
+    return this.dayStartEquity.toNumber();
+  }
+
   getPositions(): Position[] {
     return Array.from(this.positions.values());
   }

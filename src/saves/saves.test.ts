@@ -227,6 +227,32 @@ test('stop-limit trigger state survives the v1 codec and legacy absence stays un
   assert.equal(restored.exportState().openOrders[0].stopTriggered, true);
 });
 
+test('v1 save preserves the simulated-day trade cursor and legacy absence falls back to full history', () => {
+  const engine = new MarketSimulationEngine('G6_SAVE_CURSOR', 100_000);
+  assert.equal(engine.placeOrder({ ticker: 'HLVG', side: 'buy', type: 'market', quantity: 1 }).success, true);
+  assert.equal(engine.placeOrder({ ticker: 'HLVG', side: 'sell', type: 'market', quantity: 1 }).success, true);
+  const state = engine.exportState();
+  state.dayStartTradeCount = 1;
+  engine.importState(state);
+
+  const save = makeSave(engine, 'G6_SAVE_CURSOR');
+  const wire = wireOf(save);
+  const wireGame = (wire as unknown as { game: { dayStartTradeCount?: number } }).game;
+  assert.equal(wireGame.dayStartTradeCount, 1, 'cursor is written to the unchanged v1 schema');
+
+  const decoded = SaveGameSchema.decode(wire);
+  assert.equal(decoded.schemaVersion, 1);
+  assert.equal(decoded.game.dayStartTradeCount, 1);
+  assert.deepEqual(wireOf(decoded), wire);
+
+  delete wireGame.dayStartTradeCount;
+  const legacy = SaveGameSchema.decode(wire);
+  assert.equal(legacy.game.dayStartTradeCount, undefined);
+  const restored = new MarketSimulationEngine(legacy.seed, 100_000);
+  restored.importState(legacy.game);
+  assert.equal(restored.exportState().dayStartTradeCount, 2, 'legacy saves start from their full history length');
+});
+
 test('a saved partial order retains its progress and only fills its residual quantity', () => {
   const engine = new MarketSimulationEngine('G0_SAVED_PARTIAL', 1000000);
   assert.equal(engine.placeOrder({ ticker: 'VCRX', side: 'buy', type: 'market', quantity: 997 }).success, true);
