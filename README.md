@@ -164,6 +164,10 @@ To add Forex, Crypto, ETFs, or Options in Phase 2:
 
 ---
 
+### Upgrading pre-G7 saves
+
+Before upgrading, export each healthy save from **Settings → Save Slots → Export to JSON** and keep the downloaded file as an archive of its old chart history. The title screen also offers **Export original save** for unreadable or newer-version local slots. Loading a pre-G7 save resets its five wall-clock OHLCV arrays to one current simulated-time candle each; old and new timestamps are never mixed. Cash, positions, orders, fills, career progress, and save revisions are not reset. Importing the archived save into the upgraded game still resets its candles; the old chart history cannot be reconstructed from new candles.
+
 ## 7. Accounts and Cloud Saves (optional)
 
 TAPE is guest-first. With no Supabase configured the game runs entirely on local Dexie storage. Configuring Supabase adds email magic-link, GitHub and Google sign-in, cloud backup, and cross-device sync. The service role key is never used in client code.
