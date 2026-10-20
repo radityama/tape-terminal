@@ -502,12 +502,17 @@ export class PricingEngine {
       });
     }
 
-    // 1h candles
-    for (let i = 0; i < c1m.length; i += 60) {
-      const chunk = c1m.slice(i, i + 60);
-      if (chunk.length === 0) continue;
+    // 1h candles: group by clock-hour bucket, not fixed 60-minute chunks.
+    const hours = new Map<number, Candle[]>();
+    for (const candle of c1m) {
+      const bucket = simCandleBucket(candle.time, 3600);
+      const group = hours.get(bucket);
+      if (group) group.push(candle);
+      else hours.set(bucket, [candle]);
+    }
+    for (const [time, chunk] of hours) {
       c1h.push({
-        time: simCandleBucket(chunk[0].time, 3600),
+        time,
         open: chunk[0].open,
         high: Math.max(...chunk.map(c => c.high)),
         low: Math.min(...chunk.map(c => c.low)),

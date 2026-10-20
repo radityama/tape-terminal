@@ -34,6 +34,20 @@ test('simulated time maps one sim minute to one chart minute from a fixed epoch'
   }
 });
 
+test('historical hourly bars cover their clock-hour buckets', () => {
+  const engine = new MarketSimulationEngine('G7_HISTORY_HOURS', 100_000);
+  const minutes = engine.getCandles('HLVG', '1m');
+  for (const hour of engine.getCandles('HLVG', '1h')) {
+    const expected = minutes.filter((candle) => simCandleBucket(candle.time, 3600) === hour.time);
+    assert.ok(expected.length > 0);
+    assert.equal(hour.open, expected[0].open);
+    assert.equal(hour.high, Math.max(...expected.map((candle) => candle.high)));
+    assert.equal(hour.low, Math.min(...expected.map((candle) => candle.low)));
+    assert.equal(hour.close, expected.at(-1)!.close);
+    assert.equal(hour.volume, expected.reduce((sum, candle) => sum + candle.volume, 0));
+  }
+});
+
 test('1x, 5x and 20x advance candle time with simulated time', () => {
   for (const speed of [1, 5, 20] as const) {
     const engine = new MarketSimulationEngine(`G7_SPEED_${speed}`, 100_000);
@@ -169,9 +183,20 @@ test('consecutive simulated days keep every series strictly increasing', () => {
       state.candles1m, state.candles5m, state.candles15m, state.candles1h, state.candles1D,
     ]) assertAscendingUnique(series.map((candle) => candle.time));
   }
-  const before = firstDay.pricing.states.find((state) => state.ticker === 'HLVG')!;
-  const after = engine.exportState().pricing.states.find((state) => state.ticker === 'HLVG')!;
-  assert.ok(after.candles1D.at(-1)!.time >= before.candles1D.at(-1)!.time);
+  const before = firstDay.pricing.states;
+  const current = engine.exportState();
+  const expectedDay = simCandleBucket(
+    simMarketTimestamp(current.simDay, current.simSecondsOfDay),
+    86400,
+  );
+  const advanced = current.pricing.states.filter((state) => {
+    const previous = before.find((entry) => entry.ticker === state.ticker)!;
+    return state.candles1D.at(-1)!.time > previous.candles1D.at(-1)!.time;
+  });
+  assert.ok(advanced.length > 0, 'at least one symbol printed a day-2 daily bar');
+  for (const state of advanced) {
+    assert.equal(state.candles1D.at(-1)!.time, expectedDay);
+  }
 });
 
 test('save and reload mid-candle preserves simulated bars and marker', () => {
@@ -198,17 +223,32 @@ test('legacy wall-clock candles are discarded without touching player state', ()
   state.simDay = 4;
   state.simSecondsOfDay = 10 * 3600;
   const legacyState = state.pricing.states[0];
-  legacyState.candles1m = [{ time: 1_700_000_000, open: 1, high: 1, low: 1, close: 1, volume: 123 }];
+  const legacyBar = { time: 1_700_000_000, open: 1, high: 1, low: 1, close: 1, volume: 123 };
+  legacyState.candles1m = [{ ...legacyBar }];
+  legacyState.candles5m = [{ ...legacyBar }];
+  legacyState.candles15m = [{ ...legacyBar }];
+  legacyState.candles1h = [{ ...legacyBar }];
+  legacyState.candles1D = [{ ...legacyBar }];
   const cash = state.portfolio.cash;
 
   const restored = new MarketSimulationEngine('G7_LEGACY', 100_000);
   restored.importState(state);
-  const expected = simCandleBucket(simMarketTimestamp(4, 10 * 3600), 60);
   const current = restored.exportState().pricing.states[0];
-  assert.equal(current.candles1m.length, 1);
-  assert.equal(current.candles1m[0].time, expected);
-  assert.equal(current.candles1m[0].volume, 0);
-  assert.equal(current.candles1m[0].open, current.price);
+  const expectedTime = (timeframeSec: number) =>
+    simCandleBucket(simMarketTimestamp(4, 10 * 3600), timeframeSec);
+  const series = [
+    [current.candles1m, 60],
+    [current.candles5m, 300],
+    [current.candles15m, 900],
+    [current.candles1h, 3600],
+    [current.candles1D, 86400],
+  ] as const;
+  for (const [candles, timeframeSec] of series) {
+    assert.equal(candles.length, 1);
+    assert.equal(candles[0].time, expectedTime(timeframeSec));
+    assert.equal(candles[0].volume, 0);
+    assert.equal(candles[0].open, current.price);
+  }
   assert.equal(restored.exportState().portfolio.cash, cash);
 });
 

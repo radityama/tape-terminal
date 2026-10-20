@@ -259,7 +259,16 @@ test('v1 save preserves simulated candle mode and resets legacy wall-clock bars'
   engine.tick(1);
   const wire = wireOf(makeSave(engine, 'G7_SAVE_CANDLES'));
   const pricing = (wire as unknown as {
-    game: { pricing: { candleTimeMode?: string; states: Array<{ candles1m: Array<Record<string, number>> }> } };
+    game: { pricing: {
+      candleTimeMode?: string;
+      states: Array<{
+        candles1m: Array<Record<string, number>>;
+        candles5m: Array<Record<string, number>>;
+        candles15m: Array<Record<string, number>>;
+        candles1h: Array<Record<string, number>>;
+        candles1D: Array<Record<string, number>>;
+      }>;
+    } };
   }).game.pricing;
   assert.equal(pricing.candleTimeMode, 'sim');
 
@@ -269,12 +278,23 @@ test('v1 save preserves simulated candle mode and resets legacy wall-clock bars'
 
   const cash = decoded.game.portfolio.cash;
   delete pricing.candleTimeMode;
-  pricing.states[0].candles1m = [{ time: 1_700_000_000, open: 1, high: 1, low: 1, close: 1, volume: 123 }];
+  const legacyBar = { time: 1_700_000_000, open: 1, high: 1, low: 1, close: 1, volume: 123 };
+  pricing.states[0].candles1m = [{ ...legacyBar }];
+  pricing.states[0].candles5m = [{ ...legacyBar }];
+  pricing.states[0].candles15m = [{ ...legacyBar }];
+  pricing.states[0].candles1h = [{ ...legacyBar }];
+  pricing.states[0].candles1D = [{ ...legacyBar }];
   const legacy = SaveGameSchema.decode(wire);
   const restored = new MarketSimulationEngine('G7_SAVE_CANDLES', 100_000);
   restored.importState(legacy.game);
   const state = restored.exportState();
-  assert.equal(state.pricing.states[0].candles1m.length, 1);
+  for (const series of [
+    state.pricing.states[0].candles1m,
+    state.pricing.states[0].candles5m,
+    state.pricing.states[0].candles15m,
+    state.pricing.states[0].candles1h,
+    state.pricing.states[0].candles1D,
+  ]) assert.equal(series.length, 1);
   assert.equal(
     state.pricing.states[0].candles1m[0].time,
     simMarketTimestamp(legacy.game.simDay, Math.floor(legacy.game.simSecondsOfDay / 60) * 60),
