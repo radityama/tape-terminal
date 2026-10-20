@@ -8,6 +8,7 @@ import { Money } from '../lib/money';
 import { OrderBookDepth, OrderBookEngine } from './orderbook';
 import { PortfolioEngine, PortfolioEngineState, Position, RiskMetrics } from './portfolio';
 import { Candle, PricingEngine, PricingEngineState } from './pricing';
+import { simMarketTimestamp } from './sim-time';
 import { RivalEngine, RivalTrader, RivalEngineState } from './rivals';
 import { SeededRNG } from './rng';
 
@@ -190,7 +191,7 @@ export class MarketSimulationEngine {
     this.simDay = state.simDay;
     this.simSecondsOfDay = state.simSecondsOfDay;
     this.session = state.session;
-    this.pricingEngine.importState(state.pricing);
+    this.pricingEngine.importState(state.pricing, simMarketTimestamp(this.simDay, this.simSecondsOfDay));
     this.portfolioEngine.importState(state.portfolio);
     const historyLength = this.portfolioEngine.getTradeHistory().length;
     this.dayStartTradeCount = Math.max(0, Math.min(state.dayStartTradeCount ?? historyLength, historyLength));
@@ -437,9 +438,9 @@ export class MarketSimulationEngine {
     );
     this.activeJumpDeltas.clear();
 
-    // Update candle bars
-    const currentSimEpochSec = Math.floor(Date.now() / 1000);
-    this.pricingEngine.updateCandles(currentSimEpochSec);
+    // Update candle bars with simulated time and only this tick's generated volume.
+    const currentSimEpochSec = simMarketTimestamp(this.simDay, this.simSecondsOfDay);
+    this.pricingEngine.updateCandles(currentSimEpochSec, tickDeltas);
 
     // Update order book depth caches before matching orders by age across all tickers.
     const priceMap = this.pricingEngine.getPriceMap();
@@ -824,7 +825,7 @@ export class MarketSimulationEngine {
     this.careerEngine.syncObjectives(this.simDay);
     this.careerEngine.evaluateSectors(this.currentSectors());
     this.simSecondsOfDay = 9.5 * 3600; // 09:30:00
-    this.pricingEngine.startNewDay(Math.floor(Date.now() / 1000));
+    this.pricingEngine.startNewDay();
     this.dayStartTradeCount = history.length;
     this.portfolioEngine.resetDayStartEquity(endingEquity);
   }

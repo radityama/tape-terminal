@@ -85,6 +85,7 @@ const assetPriceStateSchema = z.object({
 const pricingEngineStateSchema = z.object({
   regime: z.enum(['bull', 'bear', 'chop', 'panic']),
   regimeDurationDays: z.number(),
+  candleTimeMode: z.literal('sim').optional(),
   states: z.array(assetPriceStateSchema),
 });
 

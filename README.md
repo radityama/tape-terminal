@@ -168,6 +168,12 @@ To add Forex, Crypto, ETFs, or Options in Phase 2:
 
 TAPE is guest-first. With no Supabase configured the game runs entirely on local Dexie storage. Configuring Supabase adds email magic-link, GitHub and Google sign-in, cloud backup, and cross-device sync. The service role key is never used in client code.
 
+### Upgrading saves with wall-clock candles
+
+Before upgrading, archive each healthy local save from **Settings → Save Slots → Export to JSON**. Settings exports local slots only. For a cloud-only save, use the pre-upgrade app to sign in, resume that slot, save it locally, then export it from Settings before upgrading. Do not upgrade until you have the downloaded file. The title screen also offers **Export original save** for unreadable or newer-version local slots.
+
+On load, older saves reset their five wall-clock OHLCV arrays to one simulated-time candle each; old and new timestamps are never mixed. Cash, positions, orders, fills, career progress, and save revisions are not reset. Reimporting the archive into the upgraded game still resets its candles. Keep the file if you need the original chart history.
+
 ### Environment
 
 Copy `.env.example` to `.env.local` and set:
