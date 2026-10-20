@@ -4,6 +4,7 @@ import React, { useState } from 'react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { TopBar } from '../topbar/TopBar';
 import { TapeTicker } from '../topbar/TapeTicker';
+import { ScenarioProgress } from '../scenario/ScenarioResultModal';
 import { SyncIndicator } from '../auth/SyncIndicator';
 import { WatchlistPanel } from '../watchlist/WatchlistPanel';
 import { TradingViewChart } from '../chart/TradingViewChart';
@@ -30,6 +31,7 @@ export function WorkspaceLayout() {
 
       {/* 2. Top Bar */}
       <TopBar />
+      <ScenarioProgress />
 
       {/* 3. Main Desktop Workspace (>= 1024px) */}
       <div className="flex-1 hidden lg:flex flex-col overflow-hidden">

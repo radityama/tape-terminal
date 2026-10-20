@@ -9,6 +9,7 @@ import { ScreenerModal } from '../../../src/features/screener/ScreenerModal';
 import { CompanyModal } from '../../../src/features/company/CompanyModal';
 import { CareerModal } from '../../../src/features/career/CareerModal';
 import { EndOfDayModal } from '../../../src/features/eod-report/EndOfDayModal';
+import { ScenarioResultModal } from '../../../src/features/scenario/ScenarioResultModal';
 import { SettingsModal } from '../../../src/features/settings/SettingsModal';
 import { SpotlightTutorial } from '../../../src/features/tutorial/SpotlightTutorial';
 import { ToastContainer } from '../../../src/features/toasts/ToastContainer';
@@ -166,6 +167,7 @@ export default function TerminalPage() {
       <CompanyModal />
       <CareerModal />
       <EndOfDayModal />
+      <ScenarioResultModal />
       <SettingsModal />
       <SpotlightTutorial />
       <ToastContainer />

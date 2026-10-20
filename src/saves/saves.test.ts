@@ -5,6 +5,7 @@ import { MarketSimulationEngine } from '../engine/market.ts';
 import { PortfolioEngine } from '../engine/portfolio.ts';
 import { simMarketTimestamp } from '../engine/sim-time.ts';
 import { COMPANY_MAP } from '../data/companies.ts';
+import { SCENARIOS } from '../data/scenarios.ts';
 import { SaveGame, SaveGameSchema, SCHEMA_VERSION, decimalStringFromNumber, summarizeIssues } from './schema.ts';
 import { consumeSaveRepairs, migrate, SaveVersionError, rawSchemaVersion } from './migrations.ts';
 
@@ -567,4 +568,78 @@ test('old saves with absurd prices are repaired on load and reported once', () =
       assert.equal(state?.price, fairValue, `${ticker} must reset to fair value`);
     }
   }
+});
+
+test('scenario saves keep run identity and reject career or mismatched runs', () => {
+  const scenario = SCENARIOS[0];
+  const engine = new MarketSimulationEngine(scenario.seed, 100000);
+  engine.startScenario(scenario);
+  engine.skipToNextDay();
+  const save = makeSave(engine, scenario.seed);
+  save.mode = 'sandbox';
+  save.scenarioId = scenario.id;
+  const wire = wireOf(save);
+
+  const decoded = SaveGameSchema.decode(wire);
+  assert.equal(decoded.mode, 'sandbox');
+  assert.equal(decoded.scenarioId, scenario.id);
+  assert.equal(decoded.game.scenarioRun?.id, scenario.id);
+  assert.equal(decoded.game.scenarioRun?.settledDays, 1);
+
+  const career = structuredClone(wire) as { mode: string };
+  career.mode = 'career';
+  assert.equal(SaveGameSchema.safeParse(career).success, false, 'a scenario run cannot ride in career mode');
+
+  const mismatch = structuredClone(wire) as { game: { scenarioRun?: { id: string } } };
+  mismatch.game.scenarioRun!.id = SCENARIOS[1].id;
+  assert.equal(SaveGameSchema.safeParse(mismatch).success, false, 'run and top-level scenario must match');
+
+  const legacy = structuredClone(wire) as { game: { scenarioRun?: unknown } };
+  delete legacy.game.scenarioRun;
+  const legacyDecoded = SaveGameSchema.parse(legacy);
+  assert.equal(legacyDecoded.scenarioId, scenario.id);
+  assert.equal(legacyDecoded.game.scenarioRun, undefined);
+});
+
+test('completed scenario saves reject tampered result, day, seed and legacy identity', () => {
+  const scenario = SCENARIOS[0];
+  const engine = new MarketSimulationEngine(scenario.seed, 100000);
+  engine.startScenario(scenario);
+  for (let day = 0; day < scenario.durationDays; day++) engine.skipToNextDay();
+  const save = makeSave(engine, scenario.seed);
+  save.mode = 'sandbox';
+  save.scenarioId = scenario.id;
+  const wire = wireOf(save);
+  assert.equal(SaveGameSchema.safeParse(wire).success, true);
+
+  const result = structuredClone(wire) as {
+    game: { scenarioRun: { result: { finalEquity: number | string; score: number } } };
+  };
+  result.game.scenarioRun.result.finalEquity = Number(result.game.scenarioRun.result.finalEquity) + 1;
+  assert.equal(SaveGameSchema.safeParse(result).success, false, 'result equity must be recomputable');
+
+  const score = structuredClone(wire) as { game: { scenarioRun: { result: { score: number } } } };
+  score.game.scenarioRun.result.score = 9_999;
+  assert.equal(SaveGameSchema.safeParse(score).success, false, 'result score must be recomputable');
+
+  const day = structuredClone(wire) as { game: { simDay: number } };
+  day.game.simDay += 1;
+  assert.equal(SaveGameSchema.safeParse(day).success, false, 'run days must match the saved day');
+
+  const topSeed = structuredClone(wire) as { seed: string };
+  topSeed.seed = 'OTHER_SEED';
+  assert.equal(SaveGameSchema.safeParse(topSeed).success, false, 'top-level seed must be canonical');
+
+  const gameSeed = structuredClone(wire) as { game: { seed: string } };
+  gameSeed.game.seed = 'OTHER_SEED';
+  assert.equal(SaveGameSchema.safeParse(gameSeed).success, false, 'game seed must be canonical');
+
+  const legacy = structuredClone(wire) as { mode: string; scenarioId: string | null; game: { scenarioRun?: unknown } };
+  delete legacy.game.scenarioRun;
+  legacy.scenarioId = 'not_a_scenario';
+  assert.equal(SaveGameSchema.safeParse(legacy).success, false, 'legacy scenario ids must be canonical');
+
+  legacy.scenarioId = scenario.id;
+  legacy.mode = 'career';
+  assert.equal(SaveGameSchema.safeParse(legacy).success, false, 'legacy scenario ids require sandbox');
 });
