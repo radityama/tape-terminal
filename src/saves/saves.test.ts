@@ -613,9 +613,9 @@ test('completed scenario saves reject tampered result, day, seed and legacy iden
   assert.equal(SaveGameSchema.safeParse(wire).success, true);
 
   const result = structuredClone(wire) as {
-    game: { scenarioRun: { result: { finalEquity: number; score: number } } };
+    game: { scenarioRun: { result: { finalEquity: number | string; score: number } } };
   };
-  result.game.scenarioRun.result.finalEquity += 1;
+  result.game.scenarioRun.result.finalEquity = Number(result.game.scenarioRun.result.finalEquity) + 1;
   assert.equal(SaveGameSchema.safeParse(result).success, false, 'result equity must be recomputable');
 
   const score = structuredClone(wire) as { game: { scenarioRun: { result: { score: number } } } };
