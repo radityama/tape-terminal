@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { SCENARIOS } from '../data/scenarios';
 
 // Version of the on-disk / on-wire save format. Bump when the shape changes and add a migration.
 export const SCHEMA_VERSION = 1;
@@ -242,6 +243,30 @@ const marketEventSchema = z.object({
     .optional(),
 });
 
+const scenarioRunSchema = z.object({
+  id: z.string().refine((id) => SCENARIOS.some((scenario) => scenario.id === id)),
+  startDay: z.number().int().min(1),
+  startingEquity: moneyAsNumber,
+  settledDays: z.number().int().min(0),
+  result: z.object({
+    completedDay: z.number().int().min(1),
+    finalEquity: moneyAsNumber,
+    netGain: moneyAsNumber,
+    score: z.number().int().min(0).max(10000),
+    grade: z.enum(['A', 'B', 'C', 'D']),
+    success: z.boolean(),
+  }).strict().optional(),
+}).strict().superRefine((run, ctx) => {
+  const scenario = SCENARIOS.find((entry) => entry.id === run.id);
+  if (!scenario) return;
+  if (run.settledDays > scenario.durationDays || (run.result !== undefined) !== (run.settledDays === scenario.durationDays)) {
+    ctx.addIssue({ code: 'custom', message: 'Inconsistent scenario completion', path: ['settledDays'] });
+  }
+  if (run.result && run.result.completedDay !== run.startDay + scenario.durationDays - 1) {
+    ctx.addIssue({ code: 'custom', message: 'Invalid scenario completion day', path: ['result', 'completedDay'] });
+  }
+});
+
 const marketEngineStateSchema = z.object({
   seed: z.string(),
   // Output stays a plain number so the decoded save is directly assignable to the engine state.
@@ -256,6 +281,7 @@ const marketEngineStateSchema = z.object({
   activeJumpDeltas: z.array(z.tuple([z.string(), z.number()])).default([]),
   // Absent on legacy saves; the engine initializes it from the current full history length.
   dayStartTradeCount: z.number().int().min(0).optional(),
+  scenarioRun: scenarioRunSchema.optional(),
   pricing: pricingEngineStateSchema,
   portfolio: portfolioEngineStateSchema,
   career: careerEngineStateSchema,
@@ -286,6 +312,15 @@ export const SaveGameSchema = z.object({
     simDay: z.number().int(),
   }),
   game: marketEngineStateSchema,
+}).superRefine((save, ctx) => {
+  const run = save.game.scenarioRun;
+  if (!run) return;
+  if (save.mode !== 'sandbox') {
+    ctx.addIssue({ code: 'custom', path: ['mode'], message: 'Scenario runs require sandbox mode' });
+  }
+  if (save.scenarioId !== run.id) {
+    ctx.addIssue({ code: 'custom', path: ['scenarioId'], message: 'Scenario id must match the run' });
+  }
 });
 
 export type SaveGame = z.infer<typeof SaveGameSchema>;

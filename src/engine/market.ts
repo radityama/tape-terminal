@@ -11,6 +11,8 @@ import { Candle, PricingEngine, PricingEngineState } from './pricing';
 import { simMarketTimestamp } from './sim-time';
 import { RivalEngine, RivalTrader, RivalEngineState } from './rivals';
 import { SeededRNG } from './rng';
+import { SCENARIOS, type Scenario } from '../data/scenarios';
+import { scoreScenario, type ScenarioRun } from './scenario-run';
 
 export type SimSession = 'pre_market' | 'regular' | 'after_hours' | 'closed';
 export type SimSpeed = 0 | 1 | 5 | 20;
@@ -85,6 +87,7 @@ export interface MarketEngineState {
   activeJumpDeltas: Array<[string, number]>;
   // Full trade-history length at the start of the simulated day. Legacy saves initialize it on load.
   dayStartTradeCount?: number;
+  scenarioRun?: ScenarioRun;
   pricing: PricingEngineState;
   portfolio: PortfolioEngineState;
   career: CareerEngineState;
@@ -124,6 +127,7 @@ export class MarketSimulationEngine {
   private eodReports: EndOfDayReport[] = [];
   private currentEodModal: EndOfDayReport | null = null;
   private dayStartTradeCount = 0;
+  private scenarioRun?: ScenarioRun;
   private depthCache: Map<string, OrderBookDepth> = new Map();
 
   // Callbacks for subscribers
@@ -163,6 +167,30 @@ export class MarketSimulationEngine {
     return this.speed;
   }
 
+  startScenario(scenario: Scenario) {
+    const canonical = SCENARIOS.find((entry) => entry.id === scenario.id);
+    const startingEquity = this.portfolioEngine.calculateRiskMetrics(COMPANY_MAP).netLiquidationValue;
+    const freshSession = this.simDay === 1
+      && this.simSecondsOfDay === 9.5 * 3600
+      && this.openOrders.size === 0
+      && this.portfolioEngine.getTradeHistory().length === 0
+      && this.actionSeq === 0;
+    if (!canonical || canonical.seed !== this.seed || this.scenarioRun || !freshSession || Math.abs(startingEquity - 100_000) > 0.01) {
+      throw new Error('Scenario must start from its own new seeded session.');
+    }
+    this.pricingEngine.setRegime(canonical.initialRegime);
+    this.scenarioRun = {
+      id: canonical.id,
+      startDay: this.simDay,
+      startingEquity,
+      settledDays: 0,
+    };
+  }
+
+  getScenarioRun(): ScenarioRun | undefined {
+    return this.scenarioRun && { ...this.scenarioRun, result: this.scenarioRun.result && { ...this.scenarioRun.result } };
+  }
+
   // Full state snapshot for persistence. Depth cache and EOD reports are derived and not stored.
   exportState(): MarketEngineState {
     return {
@@ -175,6 +203,7 @@ export class MarketSimulationEngine {
       actionSeq: this.actionSeq,
       activeJumpDeltas: Array.from(this.activeJumpDeltas.entries()),
       dayStartTradeCount: this.dayStartTradeCount,
+      scenarioRun: this.getScenarioRun(),
       pricing: this.pricingEngine.exportState(),
       portfolio: this.portfolioEngine.exportState(),
       career: this.careerEngine.exportState(),
@@ -191,6 +220,10 @@ export class MarketSimulationEngine {
     this.simDay = state.simDay;
     this.simSecondsOfDay = state.simSecondsOfDay;
     this.session = state.session;
+    if (state.scenarioRun && !SCENARIOS.some((scenario) => scenario.id === state.scenarioRun?.id && scenario.seed === state.seed)) {
+      throw new Error('Unknown or mismatched scenario run.');
+    }
+    this.scenarioRun = state.scenarioRun && { ...state.scenarioRun, result: state.scenarioRun.result && { ...state.scenarioRun.result } };
     this.pricingEngine.importState(state.pricing, simMarketTimestamp(this.simDay, this.simSecondsOfDay));
     this.portfolioEngine.importState(state.portfolio);
     const historyLength = this.portfolioEngine.getTradeHistory().length;
@@ -244,6 +277,7 @@ export class MarketSimulationEngine {
     takeProfitPrice?: number;
     stopLossPrice?: number;
   }): { success: boolean; orderId?: string; error?: string } {
+    if (this.scenarioRun?.result) return { success: false, error: 'Scenario completed. Trading is frozen.' };
     const validationError = validateOrderInput(params);
     if (validationError) return { success: false, error: validationError };
 
@@ -311,6 +345,7 @@ export class MarketSimulationEngine {
   }
 
   cancelOrder(orderId: string): boolean {
+    if (this.scenarioRun?.result) return false;
     const order = this.openOrders.get(orderId);
     const parentIsLive = !!order && this.isLiveOrder(order);
     // A filled parent is no longer in the map, but its id is the OCO group. Cancelling
@@ -383,6 +418,7 @@ export class MarketSimulationEngine {
 
   // Step the simulation tick by deltaTimeSec
   tick(realDeltaSeconds: number) {
+    if (this.scenarioRun?.result) return;
     // Pausing must not freeze objectives on an old week or ignore carried holdings.
     this.careerEngine.syncObjectives(this.simDay);
     this.careerEngine.evaluateSectors(this.currentSectors());
@@ -752,6 +788,7 @@ export class MarketSimulationEngine {
 
   // End of trading day sequence
   private concludeTradingDay() {
+    if (this.scenarioRun?.result) return;
     const priceMap = this.pricingEngine.getPriceMap();
     const startingEquity = this.portfolioEngine.getDayStartEquity();
 
@@ -818,6 +855,13 @@ export class MarketSimulationEngine {
 
     this.eodReports.push(report);
     this.currentEodModal = report;
+    if (this.scenarioRun && !this.scenarioRun.result) {
+      this.scenarioRun.settledDays += 1;
+      const scenario = SCENARIOS.find((entry) => entry.id === this.scenarioRun?.id)!;
+      if (this.scenarioRun.settledDays === scenario.durationDays) {
+        this.scenarioRun.result = scoreScenario(scenario, this.scenarioRun, endingEquity, this.simDay);
+      }
+    }
 
     // Reset clock for next trading day
     this.simDay += 1;
@@ -839,6 +883,7 @@ export class MarketSimulationEngine {
   }
 
   skipToNextDay() {
+    if (this.scenarioRun?.result) return;
     this.concludeTradingDay();
   }
 

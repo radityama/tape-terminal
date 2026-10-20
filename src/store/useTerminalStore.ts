@@ -9,7 +9,7 @@ import { useAuthStore } from './useAuthStore';
 
 export type BottomTab = 'positions' | 'orders' | 'blotter' | 'risk' | 'calendar' | 'leaderboard';
 export type WorkspaceLayout = 'trade' | 'research' | 'risk';
-export type ModalType = 'none' | 'company' | 'screener' | 'career' | 'eod' | 'settings' | 'scenarios' | 'saves';
+export type ModalType = 'none' | 'company' | 'screener' | 'career' | 'eod' | 'scenario-result' | 'settings' | 'scenarios' | 'saves';
 export type ChartTimeframe = '1m' | '5m' | '15m' | '1h' | '1D';
 
 export interface ToastNotification {
@@ -252,7 +252,9 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
     engine.importState(save.game);
     wireEngine(engine, get);
     const snapshot = engine.getSnapshot();
-    const scenario = save.scenarioId ? (SCENARIOS.find((s) => s.id === save.scenarioId) ?? null) : null;
+    const run = engine.getScenarioRun();
+    const scenarioId = run?.id ?? save.scenarioId;
+    const scenario = scenarioId ? (SCENARIOS.find((s) => s.id === scenarioId) ?? null) : null;
     const engineId = newEngineId();
     set({
       engine,
@@ -260,7 +262,7 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
       seed: save.seed,
       mode: save.mode,
       activeScenario: scenario,
-      activeModal: 'none',
+      activeModal: run?.result ? 'scenario-result' : 'none',
       snapshot,
       pricesByTicker: buildPriceMap(snapshot),
       sessionPhase: 'ready',
@@ -271,8 +273,15 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
   },
 
   setSnapshot: (snapshot) => {
+    const engine = get().engine;
+    const run = engine?.getScenarioRun();
     const prevDay = get().snapshot?.simDay;
-    if (prevDay !== undefined && snapshot.simDay !== prevDay) saveManager.noteSimDay();
+    const dayChanged = prevDay !== undefined && snapshot.simDay !== prevDay;
+    if (dayChanged) {
+      // Completion is a one-time result: persist it now, before the debounced autosave.
+      if (run?.result) saveManager.notePlayerAction();
+      else saveManager.noteSimDay();
+    }
 
     const prevMap = get().pricesByTicker;
     let mapChanged = false;
@@ -311,10 +320,13 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
       };
     }
 
+    const openCompletion = dayChanged && run?.result
+      && get().activeModal === 'none'
+      && engine?.getCurrentEodModal() !== null;
     if (mapChanged) {
-      set({ snapshot, pricesByTicker: newMap });
+      set({ snapshot, pricesByTicker: newMap, ...(openCompletion ? { activeModal: 'eod' as const } : {}) });
     } else {
-      set({ snapshot });
+      set({ snapshot, ...(openCompletion ? { activeModal: 'eod' as const } : {}) });
     }
   },
 
@@ -375,6 +387,7 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
     get().initEngine(scenario.seed, 'sandbox', 100000);
     const { engine } = get();
     if (engine) {
+      engine.startScenario(scenario);
       set({ activeScenario: scenario, activeModal: 'none', selectedTicker: scenario.featuredTickers[0] });
     }
   },
@@ -472,12 +485,12 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
   dismissEodReport: () => {
     const { engine } = get();
     if (engine) engine.dismissEodModal();
-    set({ activeModal: 'none' });
+    set({ activeModal: engine?.getScenarioRun()?.result ? 'scenario-result' : 'none' });
   },
 
   skipToNextDay: () => {
     const { engine } = get();
-    if (engine) {
+    if (engine && !engine.getScenarioRun()?.result) {
       engine.skipToNextDay();
       set({ snapshot: engine.getSnapshot(), activeModal: 'eod' });
       // The snapshot is set directly here, so the day-change autosave in setSnapshot never
@@ -568,7 +581,7 @@ saveManager.init({
       name: state.activeScenario?.title ?? (state.mode === 'career' ? `Career ${slot}` : `Sandbox ${slot}`),
       seed: state.seed,
       mode: state.mode,
-      scenarioId: state.activeScenario?.id ?? null,
+      scenarioId: state.engine.getScenarioRun()?.id ?? state.activeScenario?.id ?? null,
       summary: {
         rank: career?.rank?.name ?? null,
         equity: snap.riskMetrics.netLiquidationValue,
