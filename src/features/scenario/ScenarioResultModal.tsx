@@ -29,7 +29,7 @@ export function ScenarioResultModal() {
         </div>
 
         <div className="flex items-center gap-4 border border-[var(--line)] bg-[var(--bg-0)] p-3 rounded-[2px]">
-          <div className={`text-3xl font-bold ${result.success ? 'text-[var(--up)]' : 'text-[var(--down)]'}`}>
+          <div className={`text-3xl font-bold ${result.grade === 'A' ? 'text-[var(--up)]' : result.grade === 'D' ? 'text-[var(--down)]' : 'text-[var(--text-1)]'}`}>
             {result.grade}
           </div>
           <div className="space-y-0.5">
@@ -46,6 +46,8 @@ export function ScenarioResultModal() {
           <Metric label="Final equity" value={Money.from(result.finalEquity).format()} />
           <Metric label="Net P&L" value={Money.from(result.netGain).format(true)} tone={result.netGain} />
           <Metric label="Profit target" value={Money.from(scenario.targetProfit).format()} />
+          <Metric label="A benchmark" value={`${scenario.scoreBenchmark.toLocaleString()} pts`} />
+          <Metric label="Settled days" value={`${run.settledDays} / ${scenario.durationDays}`} />
           <Metric label="Completed" value={`Day ${result.completedDay}`} />
         </div>
 

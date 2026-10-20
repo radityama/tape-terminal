@@ -12,7 +12,7 @@
 
 - Seed and featured ticker remain unchanged; do not alter price RNG sequencing, order execution, career progression or cloud conflict/revision logic.
 - Starting cash is $100,000. A run starts only in an empty slot; legacy `scenarioId` without `scenarioRun` is unscored.
-- Score: `Math.round(Math.max(0, Math.min(10000, 10000 * netGain / targetProfit)))`. Win: `netGain >= targetProfit`. A at `scoreBenchmark`, B at 75%, C at 50%, D below. No risk penalty or reward; an A need not be a win.
+- Score: `Math.round(Math.max(0, Math.min(10000, 10000 * netGain / targetProfit)))`. Win: `netGain >= targetProfit`. A at `scoreBenchmark`, B at 75% of `scoreBenchmark`, C at 50% of `scoreBenchmark`, D below; use the first matching threshold. No risk penalty or reward; an A need not be a win.
 - Completion occurs after `durationDays` settled days, after fees/financing, exactly once. Freeze ticks, placement, cancellation and skips; preserve open orders read-only. Show EOD first, then a persistent inspectable result.
 - Preserve v1 saves and G0-G9 invariants. Do not start G11/G12 or redesign the terminal. Open G10 PR with title `fix(gameplay): enforce scenario rules and completion`; leave it unmerged.
 
@@ -22,11 +22,11 @@
 
 **Files:** Modify `src/engine/market.ts`; create `src/engine/scenario-run.ts`; test `src/engine/scenario-run.test.ts`.
 
-**Interfaces:** `ScenarioRun { scenarioId: Scenario['id']; startDay: number; startEquity: number; settledDays: number; result?: ScenarioResult }`; `ScenarioResult { finalDay: number; finalEquity: number; netGain: number; score: number; grade: 'A'|'B'|'C'|'D'; won: boolean }`; `scoreScenario(scenario: Scenario, run: ScenarioRun, finalEquity: number, finalDay: number): ScenarioResult`; engine `startScenario(scenario: Scenario): void`, `getScenarioRun(): ScenarioRun | undefined`.
+**Interfaces:** `ScenarioRun { id: Scenario['id']; startDay: number; startingEquity: number; settledDays: number; result?: ScenarioResult }`; `ScenarioResult { completedDay: number; finalEquity: number; netGain: number; score: number; grade: 'A'|'B'|'C'|'D'; success: boolean }`; `scoreScenario(scenario: Scenario, run: ScenarioRun, finalEquity: number, completedDay: number): ScenarioResult`; engine `startScenario(scenario: Scenario): void`, `getScenarioRun(): ScenarioRun | undefined`.
 
 - [ ] Test that each scenario starts with its canonical seed/initial regime, day 1, $100,000 baseline, zero settled days and unchanged RNG state relative to a seed-matched sandbox initialized the same way.
 - [ ] Run `bun run test src/engine/scenario-run.test.ts`; expect red: `startScenario`/`scoreScenario` absent.
-- [ ] Add the pure score calculation using `Money.from(finalEquity).sub(run.startEquity).toNumber()`, then assign grades from `scoreBenchmark`; keep win separate. Store `scenarioRun` in export/import and restore the canonical definition by ID.
+- [ ] Add the pure score calculation using `Money.from(finalEquity).sub(run.startingEquity).toNumber()`, then assign grades from `scoreBenchmark`; keep win separate. Store `scenarioRun` in export/import and restore the canonical definition by ID.
 - [ ] In `concludeTradingDay`, increment `settledDays` after financing and `risk.netLiquidationValue` are computed; produce `result` once on the last settled day. Guard `tick`, `placeOrder`, `cancelOrder`, `skipToNextDay` before any mutation when a result exists. Set the canonical initial regime after construction without drawing RNG.
 - [ ] Run focused tests: success/failure, A-but-loss, exact day boundary, repeated settlement, 1x/5x/20x and deterministic replay. Commit the engine and tests.
 
@@ -34,7 +34,7 @@
 
 **Files:** Modify `src/saves/schema.ts` and `src/saves/saves.test.ts`.
 
-**Interfaces:** Optional `scenarioRun` inside `MarketEngineState`/game codec; result fields are finite bounded numbers, grade enum, `won` boolean, scenario ID from the canonical catalogue; `0 <= settledDays <= durationDays`; result requires final day and exactly `durationDays` settled days.
+**Interfaces:** Optional `scenarioRun` inside `MarketEngineState`/game codec; result fields are finite bounded numbers, grade enum, `success` boolean, scenario ID from the canonical catalogue; `0 <= settledDays <= durationDays`; result requires final day and exactly `durationDays` settled days.
 
 - [ ] Add a failing codec test for a completed run round trip and malformed run rejection; assert `schemaVersion === 1`, saved order/cash/position/career/revision unchanged. Add a legacy `scenarioId`-only fixture that remains unscored.
 - [ ] Run `bun run test src/saves/saves.test.ts`; expect red for the new run field.
@@ -43,7 +43,7 @@
 
 ### Task 3: Store flow and result UI
 
-**Files:** Modify `src/store/useTerminalStore.ts`, `app/(game)/terminal/page.tsx`; create `src/features/scenarios/ScenarioResultModal.tsx`; test `src/store/useTerminalStore.test.ts`.
+**Files:** Modify `src/store/useTerminalStore.ts`, `app/(game)/terminal/page.tsx`; create `src/features/scenario/ScenarioResultModal.tsx`; test `src/store/useTerminalStore.test.ts`.
 
 **Interfaces:** Store derives scenario identity/progress from `engine.getScenarioRun()` on start/restore; `'scenario-result'` modal state. `dismissEodReport()` opens result if the saved run has completed. The result panel reads `engine.getScenarioRun()?.result` and closes without clearing it.
 

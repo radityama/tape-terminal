@@ -321,7 +321,6 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
     }
 
     const openCompletion = dayChanged && run?.result
-      && get().activeModal === 'none'
       && engine?.getCurrentEodModal() !== null;
     if (mapChanged) {
       set({ snapshot, pricesByTicker: newMap, ...(openCompletion ? { activeModal: 'eod' as const } : {}) });
@@ -389,6 +388,7 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
     if (engine) {
       engine.startScenario(scenario);
       set({ activeScenario: scenario, activeModal: 'none', selectedTicker: scenario.featuredTickers[0] });
+      saveManager.notePlayerAction();
     }
   },
 
@@ -497,6 +497,8 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
       // runs. Persist the skipped day immediately like any other player action; otherwise a
       // reload before the next timer tick reopens the day that was just settled.
       saveManager.notePlayerAction();
+    } else if (engine?.getScenarioRun()?.result) {
+      set({ activeModal: 'scenario-result' });
     }
   },
 }));

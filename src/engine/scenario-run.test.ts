@@ -137,3 +137,21 @@ test('same seed and actions replay the same scenario settlement', () => {
   assert.deepEqual(left.getScenarioRun(), right.getScenarioRun());
   assert.deepEqual(left.getSnapshot().riskMetrics, right.getSnapshot().riskMetrics);
 });
+
+test('the final settlement preserves pending DAY orders under the freeze', () => {
+  const scenario = SCENARIOS[0];
+  const engine = new MarketSimulationEngine(scenario.seed, 100_000);
+  engine.startScenario(scenario);
+  for (let day = 1; day < scenario.durationDays; day++) engine.skipToNextDay();
+
+  const placed = engine.placeOrder({
+    ticker: 'HLVG', side: 'buy', type: 'limit', quantity: 1, limitPrice: 1, timeInForce: 'DAY',
+  });
+  assert.equal(placed.success, true);
+  engine.skipToNextDay();
+
+  const order = engine.exportState().openOrders.find((entry) => entry.id === placed.orderId);
+  assert.ok(order, 'the final day keeps the pending order visible');
+  assert.notEqual(order.status, 'cancelled');
+  assert.equal(engine.getScenarioRun()?.result?.completedDay, scenario.durationDays);
+});

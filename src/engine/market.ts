@@ -179,6 +179,15 @@ export class MarketSimulationEngine {
       throw new Error('Scenario must start from its own new seeded session.');
     }
     this.pricingEngine.setRegime(canonical.initialRegime);
+    // Refresh cached books for the chosen regime without advancing the main RNG stream,
+    // so the scenario keeps its canonical seed sequence.
+    const rngState = this.rng.getState();
+    for (const comp of this.companies) {
+      const priceState = this.pricingEngine.getState(comp.ticker);
+      if (!priceState) continue;
+      this.depthCache.set(comp.ticker, this.bookEngine.generateDepth(comp, priceState.price, canonical.initialRegime));
+    }
+    this.rng.setState(rngState);
     this.scenarioRun = {
       id: canonical.id,
       startDay: this.simDay,
@@ -810,11 +819,23 @@ export class MarketSimulationEngine {
       }
     }
 
-    // Cancel unfilled DAY orders
-    for (const [id, order] of this.openOrders.entries()) {
-      if (order.timeInForce === 'DAY' && isValidPendingOrder(order)) {
-        order.status = 'cancelled';
-        this.openOrders.delete(id);
+    // Cancel unfilled DAY orders, except on the settlement that completes a scenario:
+    // those orders stay visible but inactive under the post-completion freeze.
+    const scenarioDefinition = this.scenarioRun
+      ? SCENARIOS.find((entry) => entry.id === this.scenarioRun?.id)
+      : undefined;
+    const completesToday = Boolean(
+      scenarioDefinition
+      && this.scenarioRun
+      && !this.scenarioRun.result
+      && this.scenarioRun.settledDays + 1 === scenarioDefinition.durationDays,
+    );
+    if (!completesToday) {
+      for (const [id, order] of this.openOrders.entries()) {
+        if (order.timeInForce === 'DAY' && isValidPendingOrder(order)) {
+          order.status = 'cancelled';
+          this.openOrders.delete(id);
+        }
       }
     }
 

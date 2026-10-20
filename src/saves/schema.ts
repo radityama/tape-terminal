@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { SCENARIOS } from '../data/scenarios';
+import { scoreScenario } from '../engine/scenario-run';
 
 // Version of the on-disk / on-wire save format. Bump when the shape changes and add a migration.
 export const SCHEMA_VERSION = 1;
@@ -314,12 +315,40 @@ export const SaveGameSchema = z.object({
   game: marketEngineStateSchema,
 }).superRefine((save, ctx) => {
   const run = save.game.scenarioRun;
-  if (!run) return;
+  if (!run) {
+    if (save.scenarioId === null) return;
+    const legacy = SCENARIOS.find((scenario) => scenario.id === save.scenarioId);
+    if (!legacy || save.mode !== 'sandbox' || save.seed !== legacy.seed || save.game.seed !== legacy.seed) {
+      ctx.addIssue({ code: 'custom', path: ['scenarioId'], message: 'Legacy scenario id must match a canonical sandbox seed' });
+    }
+    return;
+  }
+
+  const scenario = SCENARIOS.find((entry) => entry.id === run.id);
+  if (!scenario) {
+    ctx.addIssue({ code: 'custom', path: ['game', 'scenarioRun', 'id'], message: 'Unknown scenario id' });
+    return;
+  }
   if (save.mode !== 'sandbox') {
     ctx.addIssue({ code: 'custom', path: ['mode'], message: 'Scenario runs require sandbox mode' });
   }
   if (save.scenarioId !== run.id) {
     ctx.addIssue({ code: 'custom', path: ['scenarioId'], message: 'Scenario id must match the run' });
+  }
+  if (save.seed !== scenario.seed || save.game.seed !== scenario.seed) {
+    ctx.addIssue({ code: 'custom', path: ['seed'], message: 'Scenario seed must match the canonical seed' });
+  }
+  if (save.game.simDay !== run.startDay + run.settledDays) {
+    ctx.addIssue({ code: 'custom', path: ['game', 'simDay'], message: 'Scenario day count does not match its settlement' });
+  }
+
+  if (run.result) {
+    const expected = scoreScenario(scenario, run, run.result.finalEquity, run.result.completedDay);
+    for (const field of ['finalEquity', 'netGain', 'score', 'grade', 'success'] as const) {
+      if (run.result[field] !== expected[field]) {
+        ctx.addIssue({ code: 'custom', path: ['game', 'scenarioRun', 'result', field], message: 'Scenario result does not match its settlement' });
+      }
+    }
   }
 });
 
