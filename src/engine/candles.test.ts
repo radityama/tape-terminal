@@ -37,7 +37,10 @@ test('simulated time maps one sim minute to one chart minute from a fixed epoch'
 test('historical hourly bars cover their clock-hour buckets', () => {
   const engine = new MarketSimulationEngine('G7_HISTORY_HOURS', 100_000);
   const minutes = engine.getCandles('HLVG', '1m');
-  for (const hour of engine.getCandles('HLVG', '1h')) {
+  const hours = engine.getCandles('HLVG', '1h');
+  const minuteBuckets = [...new Set(minutes.map((candle) => simCandleBucket(candle.time, 3600)))];
+  assert.deepEqual(hours.map((hour) => hour.time), minuteBuckets);
+  for (const hour of hours) {
     const expected = minutes.filter((candle) => simCandleBucket(candle.time, 3600) === hour.time);
     assert.ok(expected.length > 0);
     assert.equal(hour.open, expected[0].open);
