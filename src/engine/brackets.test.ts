@@ -166,7 +166,7 @@ test('independent bracket groups on one ticker keep their own OCO pairs', () => 
   assert.ok(after.openOrders.every((order) => order.isBracketChild && order.quantity === 2));
 });
 
-test('a partially filled parent creates linked exits that cover the full position', () => {
+test('a partially filled parent creates linked exits only for newly opened shares', () => {
   const engine = new MarketSimulationEngine('G5_PARTIAL_PARENT', 100000);
   assert.equal(engine.placeOrder({ ticker: 'HLVG', side: 'buy', type: 'market', quantity: 2 }).success, true);
   const parent = engine.placeOrder({
@@ -188,7 +188,7 @@ test('a partially filled parent creates linked exits that cover the full positio
   assert.equal(after.portfolio.positions.find((position) => position.ticker === 'HLVG')?.shares, 5);
   assert.equal(after.portfolio.tradeHistory[0].shares, 3, 'only the remaining parent shares fill');
   assert.equal(after.openOrders.length, 2);
-  assert.ok(after.openOrders.every((order) => order.parentOrderId === parent.orderId && order.quantity === 5));
+  assert.ok(after.openOrders.every((order) => order.parentOrderId === parent.orderId && order.quantity === 3));
 });
 
 test('a partially filled exit fills only its remainder and cancels its sibling', () => {

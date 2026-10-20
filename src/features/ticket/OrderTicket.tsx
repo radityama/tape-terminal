@@ -5,6 +5,7 @@ import { useTerminalStore } from '../../store/useTerminalStore';
 import { COMPANY_MAP } from '../../data/companies';
 import { OrderSide, OrderType, TimeInForce } from '../../engine/matching';
 import { EquityAssetClass } from '../../engine/assets/equity';
+import { walkDepth } from '../../engine/orderbook';
 
 export function OrderTicket() {
   const selectedTicker = useTerminalStore((s) => s.selectedTicker);
@@ -59,50 +60,37 @@ export function OrderTicket() {
       basePrice = activeSide === 'buy' ? depth.bestAsk : depth.bestBid;
     }
 
-    // Estimate fill price with book walk
-    let estFillPrice = basePrice;
-    let estSlippageDollars = 0;
-    let estSlippageBps = 0;
-
-    if (orderType === 'limit' && limitPrice && parseFloat(limitPrice) > 0) {
-      estFillPrice = parseFloat(limitPrice);
-    } else if (depth) {
-      // Simulate fill with depth ladder
-      const levels = activeSide === 'buy' ? depth.asks : depth.bids;
-      let rem = qty;
-      let accum = 0;
-      for (const lvl of levels) {
-        if (rem <= 0) break;
-        const take = Math.min(rem, lvl.size);
-        accum += take * lvl.price;
-        rem -= take;
-      }
-      if (rem > 0) {
-        const last = levels[levels.length - 1];
-        accum += rem * (activeSide === 'buy' ? last.price + depth.spread : Math.max(0.01, last.price - depth.spread));
-      }
-      estFillPrice = Math.round((accum / qty) * 100) / 100;
-      estSlippageDollars = Math.abs(estFillPrice - basePrice);
-      estSlippageBps = basePrice > 0 ? Math.round((estSlippageDollars / basePrice) * 10000 * 10) / 10 : 0;
-    }
+    const limit = (orderType === 'limit' || orderType === 'stop_limit') && Number(limitPrice) > 0
+      ? Number(limitPrice) : undefined;
+    const preview = depth ? walkDepth(activeSide, qty, depth, limit) : undefined;
+    const estimatedShares = preview?.filledQuantity ?? 0;
+    const estFillPrice = preview?.averagePrice || limit || basePrice;
+    const estSlippageDollars = preview?.slippageDollars ?? 0;
+    const estSlippageBps = preview?.slippageBps ?? 0;
 
     // Commission
     const feeModel = EquityAssetClass.feeModel;
-    const rawComm = feeModel.basePerTrade + qty * feeModel.perUnitFee + qty * estFillPrice * feeModel.percentageFee;
-    const estCommission = Math.max(feeModel.minimumFee, Math.round(rawComm * 100) / 100);
+    const feeAt = (shares: number, price: number) => Math.max(feeModel.minimumFee,
+      Math.round((feeModel.basePerTrade + shares * feeModel.perUnitFee
+        + shares * price * feeModel.percentageFee) * 100) / 100);
+    const estCommission = estimatedShares ? feeAt(estimatedShares, estFillPrice) : 0;
 
-    const totalTradeCost = Math.round((qty * estFillPrice + estCommission) * 100) / 100;
-    const currentEquity = risk?.netLiquidationValue || 100000;
-    const currentCash = risk?.cashBalance || 100000;
-    const currentBuyingPower = risk?.buyingPower || 100000;
+    const totalTradeCost = Math.round((estimatedShares * estFillPrice + estCommission) * 100) / 100;
+    const currentEquity = risk?.netLiquidationValue ?? 100000;
+    const currentCash = risk?.cashBalance ?? 100000;
+    const currentBuyingPower = risk?.buyingPower ?? 100000;
 
-    const resultingCash = activeSide === 'buy' ? currentCash - totalTradeCost : currentCash + (qty * estFillPrice) - estCommission;
+    const resultingCash = activeSide === 'buy' ? currentCash - totalTradeCost : currentCash + estimatedShares * estFillPrice - estCommission;
     const resultingBuyingPower = Math.max(0, currentBuyingPower - totalTradeCost);
-    const positionFraction = currentEquity > 0 ? (totalTradeCost / currentEquity) * 100 : 0;
+    const positionFraction = currentEquity > 0 ? (Math.max(totalTradeCost, qty * (limit ?? basePrice) + feeModel.minimumFee) / currentEquity) * 100 : 0;
     const isLargeOrder = positionFraction >= 25;
+    const commitmentShares = orderType === 'market' ? 1 : qty;
+    const commitmentPrice = orderType === 'market' ? basePrice : limit ?? basePrice;
+    const commitmentFee = feeAt(commitmentShares, commitmentPrice) * (isMarginUnlocked ? 2 : 1);
 
     return {
       estFillPrice,
+      estimatedShares,
       estSlippageDollars,
       estSlippageBps,
       estCommission,
@@ -111,9 +99,10 @@ export function OrderTicket() {
       resultingBuyingPower,
       positionFraction,
       isLargeOrder,
-      hasSufficientBuyingPower: activeSide === 'sell' || totalTradeCost <= currentBuyingPower,
+      hasSufficientBuyingPower: activeSide === 'sell' || (heldShares < 0 && commitmentShares <= -heldShares)
+        || commitmentShares * commitmentPrice + commitmentFee <= currentBuyingPower,
     };
-  }, [orderQuantity, activeSide, orderType, limitPrice, currentPrice, depth, risk]);
+  }, [orderQuantity, activeSide, orderType, limitPrice, currentPrice, depth, risk, isMarginUnlocked, heldShares]);
 
   const handleQuickQty = (percent: number) => {
     if (activeSide === 'sell' && !isShortUnlocked) {
@@ -378,6 +367,11 @@ export function OrderTicket() {
           <div className="flex justify-between text-[var(--text-3)] text-[10px] uppercase border-b border-[var(--line)] pb-1">
             <span>Pre-Trade Estimate</span>
             <span>Values</span>
+          </div>
+
+          <div className="flex justify-between">
+            <span className="text-[var(--text-3)]">Visible fill now:</span>
+            <span className="text-[var(--text-1)]">{preTrade.estimatedShares} / {orderQuantity} shs</span>
           </div>
 
           <div className="flex justify-between">

@@ -131,6 +131,10 @@ export class PortfolioEngine {
     return this.marginUnlocked;
   }
 
+  isShortingUnlocked(): boolean {
+    return this.shortingUnlocked;
+  }
+
   getStartingCapital(): number {
     return this.startingCapital.toNumber();
   }
@@ -193,56 +197,10 @@ export class PortfolioEngine {
     }
   ): { success: boolean; error?: string; tradeRecord?: TradeRecord } {
     const { ticker, side, shares, price, commission, timestamp, orderId, slippageDollars, initialStopPrice } = trade;
-    if (!validOrderValue(shares, price)
-      || !Number.isFinite(commission) || commission < 0 || !Number.isSafeInteger(Math.round(commission * 100))
-      || !Number.isFinite(slippageDollars) || slippageDollars < 0 || !Number.isSafeInteger(Math.round(slippageDollars * 100))
-      || (initialStopPrice !== undefined && !validOrderValue(shares, initialStopPrice))) {
-      return { success: false, error: 'Invalid fill quantity or price.' };
-    }
+    const error = this.checkFill(trade);
+    if (error) return { success: false, error };
     const existing = this.positions.get(ticker);
     const notional = shares * price;
-
-    // A sell cannot exceed the long shares available while shorting is locked.
-    if (side === 'sell' && !this.shortingUnlocked && shares > Math.max(existing?.shares ?? 0, 0)) {
-      return { success: false, error: 'Short selling unlocks at Rank 2 (Junior Trader).' };
-    }
-    if (side === 'sell' && !this.marginUnlocked && shares > Math.max(0, existing?.shares ?? 0)) {
-      let shortValue = Math.max(0, shares - (existing?.shares ?? 0)) * price;
-      for (const position of this.positions.values()) {
-        if (position.ticker !== ticker && position.shares < 0) shortValue += position.marketValue;
-      }
-      if (Math.round((this.getCash() + notional - commission - shortValue) * 100) < 0) {
-        return { success: false, error: 'Insufficient buying power.' };
-      }
-    }
-    if (side === 'buy' && shares > Math.max(0, -(existing?.shares ?? 0))) {
-      const cashAfter = this.getCash() - notional - commission;
-      if (!this.marginUnlocked) {
-        let shortValue = Math.max(0, -((existing?.shares ?? 0) + shares)) * price;
-        for (const position of this.positions.values()) {
-          if (position.ticker !== ticker && position.shares < 0) shortValue += position.marketValue;
-        }
-        if (Math.round((cashAfter - shortValue) * 100) < 0) {
-          return { success: false, error: 'Insufficient buying power.' };
-        }
-      }
-    }
-    if (this.marginUnlocked && (side === 'buy'
-      ? shares > Math.max(0, -(existing?.shares ?? 0))
-      : shares > Math.max(0, existing?.shares ?? 0))) {
-      const cashAfter = this.getCash() + (side === 'buy' ? -notional : notional) - commission;
-      const projectedShares = (existing?.shares ?? 0) + (side === 'buy' ? shares : -shares);
-      let longValue = Math.max(0, projectedShares) * price;
-      let shortValue = Math.max(0, -projectedShares) * price;
-      for (const position of this.positions.values()) {
-        if (position.ticker === ticker) continue;
-        if (position.shares > 0) longValue += position.marketValue;
-        else shortValue += position.marketValue;
-      }
-      if (this.marginBuyingPower(cashAfter, longValue, shortValue) < 0) {
-        return { success: false, error: 'Insufficient buying power.' };
-      }
-    }
 
     let isClosingTrade = false;
     let realizedPnl: number | undefined;
@@ -407,6 +365,59 @@ export class PortfolioEngine {
 
     this.tradeHistory.unshift(tradeRecord);
     return { success: true, tradeRecord };
+  }
+
+  checkFill(trade: Parameters<PortfolioEngine['executeFill']>[0]): string | null {
+    const { ticker, side, shares, price, commission, slippageDollars, initialStopPrice } = trade;
+    if (!validOrderValue(shares, price)
+      || !Number.isFinite(commission) || commission < 0 || !Number.isSafeInteger(Math.round(commission * 100))
+      || !Number.isFinite(slippageDollars) || slippageDollars < 0 || !Number.isSafeInteger(Math.round(slippageDollars * 100))
+      || (initialStopPrice !== undefined && !validOrderValue(1, initialStopPrice))) {
+      return 'Invalid fill quantity or price.';
+    }
+    const existing = this.positions.get(ticker);
+    const notional = shares * price;
+    if (side === 'sell' && !this.shortingUnlocked && shares > Math.max(existing?.shares ?? 0, 0)) {
+      return 'Short selling unlocks at Rank 2 (Junior Trader).';
+    }
+    if (side === 'sell' && !this.marginUnlocked && shares > Math.max(0, existing?.shares ?? 0)) {
+      let shortValue = Math.max(0, shares - (existing?.shares ?? 0)) * price;
+      for (const position of this.positions.values()) {
+        if (position.ticker !== ticker && position.shares < 0) shortValue += position.marketValue;
+      }
+      if (Math.round((this.getCash() + notional - commission - shortValue) * 100) < 0) {
+        return 'Insufficient buying power.';
+      }
+    }
+    if (side === 'buy' && shares > Math.max(0, -(existing?.shares ?? 0))) {
+      const cashAfter = this.getCash() - notional - commission;
+      if (!this.marginUnlocked) {
+        let shortValue = Math.max(0, -((existing?.shares ?? 0) + shares)) * price;
+        for (const position of this.positions.values()) {
+          if (position.ticker !== ticker && position.shares < 0) shortValue += position.marketValue;
+        }
+        if (Math.round((cashAfter - shortValue) * 100) < 0) {
+          return 'Insufficient buying power.';
+        }
+      }
+    }
+    if (this.marginUnlocked && (side === 'buy'
+      ? shares > Math.max(0, -(existing?.shares ?? 0))
+      : shares > Math.max(0, existing?.shares ?? 0))) {
+      const cashAfter = this.getCash() + (side === 'buy' ? -notional : notional) - commission;
+      const projectedShares = (existing?.shares ?? 0) + (side === 'buy' ? shares : -shares);
+      let longValue = Math.max(0, projectedShares) * price;
+      let shortValue = Math.max(0, -projectedShares) * price;
+      for (const position of this.positions.values()) {
+        if (position.ticker === ticker) continue;
+        if (position.shares > 0) longValue += position.marketValue;
+        else shortValue += position.marketValue;
+      }
+      if (this.marginBuyingPower(cashAfter, longValue, shortValue) < 0) {
+        return 'Insufficient buying power.';
+      }
+    }
+    return null;
   }
 
   // Daily overnight fees: margin cash interest (if cash is negative) and short borrow fees

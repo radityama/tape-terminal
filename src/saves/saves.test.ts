@@ -57,6 +57,62 @@ test('save round trips through the codec with money kept as decimal strings', ()
   assert.equal(typeof w.game.pricing.states[0].price, 'string');
 });
 
+test('v1 save codec preserves partial execution, cumulative fees and a triggered remainder', () => {
+  const engine = new MarketSimulationEngine('G9_SAVE_PARTIAL', 100_000_000);
+  const visible = engine.getDepth('HLVG')!.asks.reduce((sum, level) => sum + level.size, 0);
+  const placed = engine.placeOrder({ ticker: 'HLVG', side: 'buy', type: 'stop', quantity: visible * 3 + 7,
+    stopPrice: 0.01, timeInForce: 'GTC' });
+  assert.equal(placed.success, true);
+  engine.tick(0.05);
+  engine.tick(0.05);
+  const save = makeSave(engine, 'G9_SAVE_PARTIAL');
+  const wire = wireOf(save);
+  const decoded = SaveGameSchema.decode(wire);
+  assert.equal(decoded.schemaVersion, 1);
+  assert.deepEqual(wireOf(decoded), wire);
+  const partial = decoded.game.openOrders.find((order) => order.id === placed.orderId)!;
+  assert.equal(partial.status, 'partially_filled');
+  assert.equal(partial.stopTriggered, true);
+  const recorded = decoded.game.portfolio.tradeHistory.filter((trade) => trade.orderId === placed.orderId);
+  assert.equal(recorded.length, 2);
+  assert.equal(partial.filledQuantity, recorded.reduce((sum, trade) => sum + trade.shares, 0));
+  assert.ok(partial.filledQuantity < visible * 3 + 7);
+  assert.equal(partial.commissionPaid, Math.round(recorded.reduce((sum, trade) => sum + trade.commission, 0) * 100) / 100);
+  assert.ok(Math.abs(partial.averageFillPrice! - recorded.reduce((sum, trade) => sum + trade.shares * trade.price, 0)
+    / partial.filledQuantity) <= 0.01);
+  const first = new MarketSimulationEngine(decoded.seed);
+  const second = new MarketSimulationEngine(decoded.seed);
+  first.importState(decoded.game);
+  second.importState(decoded.game);
+  first.tick(0.05);
+  second.tick(0.05);
+  const trades = (e: MarketSimulationEngine) => e.exportState().portfolio.tradeHistory
+    .filter((trade) => trade.orderId === placed.orderId).map(({ id, timestamp, ...trade }) => trade);
+  assert.deepEqual(trades(first), trades(second));
+  const remaining = first.exportState().openOrders.find((order) => order.id === placed.orderId)!;
+  assert.equal(remaining.filledQuantity, trades(first).reduce((sum, trade) => sum + trade.shares, 0));
+  assert.equal(remaining.commissionPaid, Math.round(trades(first).reduce((sum, trade) => sum + trade.commission, 0) * 100) / 100);
+  assert.ok(Math.abs(remaining.averageFillPrice! - trades(first).reduce((sum, trade) => sum + trade.shares * trade.price, 0)
+    / remaining.filledQuantity) <= 0.01);
+  assert.ok(remaining.filledQuantity < visible * 3 + 7);
+});
+
+test('v1 save keeps a manually cancelled bracket leg disabled while its parent remains partial', () => {
+  const engine = new MarketSimulationEngine('G9_SAVE_CHILD_CANCEL', 100_000_000);
+  const visible = engine.getDepth('HLVG')!.asks.reduce((sum, level) => sum + level.size, 0);
+  const parent = engine.placeOrder({ ticker: 'HLVG', side: 'buy', type: 'market', quantity: visible + 5,
+    timeInForce: 'GTC', takeProfitPrice: 1000000, stopLossPrice: 0.01 });
+  assert.equal(parent.success, true);
+  assert.equal(engine.cancelOrder(`${parent.orderId}_tp`), true);
+  const save = SaveGameSchema.decode(wireOf(makeSave(engine, engine.seed)));
+  assert.equal(save.game.openOrders.find((order) => order.id === parent.orderId)?.takeProfitPrice, undefined);
+  const restored = new MarketSimulationEngine(save.seed);
+  restored.importState(save.game);
+  restored.tick(0.05);
+  assert.equal(restored.exportState().openOrders.some((order) => order.id === `${parent.orderId}_tp`), false);
+  assert.equal(restored.exportState().openOrders.find((order) => order.id === `${parent.orderId}_sl`)?.quantity, visible + 5);
+});
+
 test('same seed and same actions reproduce identical state after save and load', () => {
   const priceRow = (e: MarketSimulationEngine) =>
     e.getSnapshot().prices.map((p) => ({ ticker: p.ticker, price: p.price, volume: p.volume }));
