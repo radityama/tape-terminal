@@ -1,6 +1,9 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { MarketSimulationEngine } from './market.ts';
+import { PortfolioEngine } from './portfolio.ts';
+import { closingTradeNet } from './trade-pnl.ts';
+import { formatSignedPercent } from '../lib/format-percent.ts';
 import { COMPANY_MAP } from '../data/companies.ts';
 import { Money } from '../lib/money.ts';
 import type { TradeRecord } from './matching.ts';
@@ -227,6 +230,57 @@ test('accelerated ticks at 1x, 5x and 20x settle each simulated day once', () =>
       assert.equal(engine.exportState().simDay, day + 1);
     }
   }
+});
+
+test('best/worst use only the closing portion of a reversal commission', () => {
+  const fill = (portfolio: PortfolioEngine, side: 'buy' | 'sell', shares: number, price: number) =>
+    portfolio.executeFill({
+      orderId: `${side}_${shares}`,
+      ticker: 'HLVG',
+      side,
+      shares,
+      price,
+      commission: 3,
+      slippageDollars: 0,
+      timestamp: 0,
+    });
+
+  const longToShort = new PortfolioEngine(100_000, true, true);
+  assert.equal(fill(longToShort, 'buy', 10, 100).success, true);
+  assert.equal(fill(longToShort, 'sell', 15, 110).success, true);
+  const longReverse = longToShort.exportState().tradeHistory[0];
+  assert.equal(longReverse.realizedPnl, 100);
+  assert.equal(longReverse.closingCommission, 2, '10 of 15 shares were closing');
+  assert.equal(closingTradeNet(longReverse), 98);
+
+  const shortToLong = new PortfolioEngine(100_000, true, true);
+  assert.equal(fill(shortToLong, 'sell', 10, 100).success, true);
+  assert.equal(fill(shortToLong, 'buy', 15, 90).success, true);
+  const shortReverse = shortToLong.exportState().tradeHistory[0];
+  assert.equal(shortReverse.realizedPnl, 100);
+  assert.equal(shortReverse.closingCommission, 2, '10 of 15 shares were closing');
+  assert.equal(closingTradeNet(shortReverse), 98);
+
+  const engine = new MarketSimulationEngine('G6_REVERSAL', 100_000);
+  const state = engine.exportState();
+  state.portfolio = longToShort.exportState();
+  state.dayStartTradeCount = 0;
+  engine.importState(state);
+  engine.skipToNextDay();
+  assert.equal(closingTradeNet(engine.getCurrentEodModal()!.bestTrade!), 98);
+});
+
+test('legacy closing trades without an allocation keep their full commission', () => {
+  assert.equal(closingTradeNet({ realizedPnl: 10, commission: 3 }), 7);
+  assert.equal(closingTradeNet({ realizedPnl: 10, commission: 3, closingCommission: 1 }), 9);
+});
+
+test('tiny non-zero returns keep a visible sign instead of -0.00%', () => {
+  assert.equal(formatSignedPercent(-0.0036), '-0.0036%');
+  assert.equal(formatSignedPercent(0.0036), '+0.0036%');
+  assert.equal(formatSignedPercent(-1.234), '-1.23%');
+  assert.equal(formatSignedPercent(0), '0.00%');
+  assert.equal(formatSignedPercent(null), 'N/A');
 });
 
 test('consecutive settlements attribute each day once, including split partial exits', () => {

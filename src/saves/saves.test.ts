@@ -253,6 +253,34 @@ test('v1 save preserves the simulated-day trade cursor and legacy absence falls 
   assert.equal(restored.exportState().dayStartTradeCount, 2, 'legacy saves start from their full history length');
 });
 
+test('v1 save preserves reversal closing commission while legacy trades stay loadable', () => {
+  const portfolio = new PortfolioEngine(100_000, true, true);
+  portfolio.executeFill({ orderId: 'open', ticker: 'HLVG', side: 'buy', shares: 10, price: 100,
+    commission: 3, slippageDollars: 0, timestamp: 0 });
+  portfolio.executeFill({ orderId: 'reverse', ticker: 'HLVG', side: 'sell', shares: 15, price: 110,
+    commission: 3, slippageDollars: 0, timestamp: 0 });
+  const engine = new MarketSimulationEngine('G6_REVERSAL_SAVE', 100_000);
+  const state = engine.exportState();
+  state.portfolio = portfolio.exportState();
+  engine.importState(state);
+
+  const wire = wireOf(makeSave(engine, 'G6_REVERSAL_SAVE'));
+  const trade = (wire as unknown as { game: { portfolio: { tradeHistory: Array<{ closingCommission?: string }> } } })
+    .game.portfolio.tradeHistory[0];
+  assert.equal(Number(trade.closingCommission), 2, 'only the closed-share commission is persisted');
+
+  const decoded = SaveGameSchema.decode(wire);
+  assert.equal(decoded.game.portfolio.tradeHistory[0].closingCommission, 2);
+  assert.deepEqual(wireOf(decoded), wire);
+
+  delete trade.closingCommission;
+  const legacy = SaveGameSchema.decode(wire);
+  assert.equal(legacy.game.portfolio.tradeHistory[0].closingCommission, undefined);
+  const restored = new PortfolioEngine();
+  restored.importState(legacy.game.portfolio);
+  assert.equal(restored.exportState().tradeHistory[0].closingCommission, undefined);
+});
+
 test('a saved partial order retains its progress and only fills its residual quantity', () => {
   const engine = new MarketSimulationEngine('G0_SAVED_PARTIAL', 1000000);
   assert.equal(engine.placeOrder({ ticker: 'VCRX', side: 'buy', type: 'market', quantity: 997 }).success, true);

@@ -208,6 +208,7 @@ export class PortfolioEngine {
 
     let isClosingTrade = false;
     let realizedPnl: number | undefined;
+    let closingCommission: number | undefined;
     let holdingTimeMinutes: number | undefined;
     let rMultiple: number | undefined;
 
@@ -275,6 +276,9 @@ export class PortfolioEngine {
         isClosingTrade = true;
         const sharesToClose = Math.min(Math.abs(currentShares), shares);
         const fractionClosed = sharesToClose / Math.abs(currentShares);
+        // A reversal's commission covers both the close and the new opening; only the
+        // closed-share portion is attributed to this closing fill.
+        closingCommission = Math.round(commission * (sharesToClose / shares) * 100) / 100;
 
         if (currentShares > 0) {
           // Closing long shares: receiving cash
@@ -363,6 +367,7 @@ export class PortfolioEngine {
       timestamp,
       isClosingTrade,
       realizedPnl: realizedPnl !== undefined ? Math.round(realizedPnl * 100) / 100 : undefined,
+      closingCommission,
       holdingTimeMinutes,
       rMultiple,
     };

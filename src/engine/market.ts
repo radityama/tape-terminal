@@ -3,6 +3,7 @@ import { CareerEngine, CareerEngineState } from './career';
 import { MarketRegime } from './correlation';
 import { EventGenerator, MarketEvent } from './events';
 import { Order, OrderMatchingEngine, OrderSide, OrderType, TimeInForce, TradeRecord, isValidPendingOrder, validOrderValue, validateOrderInput } from './matching';
+import { closingTradeNet } from './trade-pnl';
 import { Money } from '../lib/money';
 import { OrderBookDepth, OrderBookEngine } from './orderbook';
 import { PortfolioEngine, PortfolioEngineState, Position, RiskMetrics } from './portfolio';
@@ -782,14 +783,13 @@ export class MarketSimulationEngine {
     // Generate End of Day Coach Report
     const history = this.portfolioEngine.getTradeHistory();
     const todaysTrades = history.slice(0, Math.max(0, history.length - this.dayStartTradeCount));
-    const closingNet = (trade: TradeRecord) => Money.from(trade.realizedPnl ?? 0).sub(trade.commission).toNumber();
     const closingTrades = todaysTrades.filter((trade) => trade.isClosingTrade && trade.realizedPnl !== undefined);
     let bestTrade: TradeRecord | undefined;
     let worstTrade: TradeRecord | undefined;
 
     for (const trade of closingTrades) {
-      if (!bestTrade || closingNet(trade) > closingNet(bestTrade)) bestTrade = trade;
-      if (!worstTrade || closingNet(trade) < closingNet(worstTrade)) worstTrade = trade;
+      if (!bestTrade || closingTradeNet(trade) > closingTradeNet(bestTrade)) bestTrade = trade;
+      if (!worstTrade || closingTradeNet(trade) < closingTradeNet(worstTrade)) worstTrade = trade;
     }
 
     // Coach note evaluation

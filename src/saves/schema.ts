@@ -115,6 +115,7 @@ const tradeRecordSchema = z.object({
   timestamp: z.number(),
   isClosingTrade: z.boolean(),
   realizedPnl: optMoney,
+  closingCommission: optMoney,
   holdingTimeMinutes: z.number().optional(),
   rMultiple: z.number().optional(),
 });

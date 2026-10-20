@@ -55,7 +55,7 @@ const endingEquity = risk.netLiquidationValue;
 const netPnl = Money.from(endingEquity).sub(startingEquity).toNumber();
 // In the report:
 startingEquity, endingEquity, netPnl,
-returnPct: startingEquity > 0 ? Math.round((netPnl / startingEquity) * 1000) / 10 : null,
+returnPct: startingEquity > 0 ? Math.round((netPnl / startingEquity) * 1000000) / 10000 : null,
 sectorAttribution: [],
 // At the day boundary:
 this.portfolioEngine.resetDayStartEquity(endingEquity);
@@ -124,9 +124,10 @@ Do not truncate trade history. Verify a missing cursor never attributes pre-load
 
 ```ts
 const signedMoney = (value: number) => value === 0 ? '$0.00' : `${value < 0 ? '-' : '+'}$${Math.abs(value).toFixed(2)}`;
-const closingNet = (trade: TradeRecord) => Money.from(trade.realizedPnl ?? 0).sub(trade.commission).toNumber();
+// Shared with the engine; reversal fills carry only the closed-share portion.
+const closingNet = (trade: TradeRecord) => closingTradeNet(trade);
 ```
 
-Show `signedMoney(closingNet(report.bestTrade))` and the same for worst, with colors chosen by the **value**, not the heading. Display unavailable returns as `N/A`; show `No closed trades today` when neither close exists, and say `Closing fill P&L after exit commission; entry fees not allocated.` and `Sector P&L unavailable.` No duplicate sign prefixes. Keep the existing dismiss controls.
+Show `signedMoney(closingNet(report.bestTrade))` and the same for worst, with colors chosen by the **value**, not the heading. Display unavailable returns as `N/A` and non-zero returns below 0.01% with four decimals so a tiny loss never reads `-0.00%`; show `No closed trades today` when neither close exists, and say `Closing fill P&L after the commission allocated to the closed shares; entry fees not allocated.` and `Sector P&L unavailable.` No duplicate sign prefixes. Keep the existing dismiss controls.
 - [ ] **Step 3: Re-run browser signed P&L, zero and negative equity checks** against disposable local data, then `bun install --frozen-lockfile`, `bun run lint`, `bunx tsc --noEmit`, `bun run test -- --maxWorkers=1`, `bun run build`, guarded `bash e2e/scripts/run.sh`, `git diff --check`. The Playwright runner must confirm local-only Supabase before test data creation. Fix any regressions; update roadmap status for G6 and defer remaining gaps with triggers.
 - [ ] **Step 4: Commit, push and open PR** `fix(engine): calculate accurate simulated end-of-day reports` against `main`. Address review comments and re-run affected checks. Leave PR open; do not start G7.
