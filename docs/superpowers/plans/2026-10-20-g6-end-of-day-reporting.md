@@ -55,7 +55,7 @@ const endingEquity = risk.netLiquidationValue;
 const netPnl = Money.from(endingEquity).sub(startingEquity).toNumber();
 // In the report:
 startingEquity, endingEquity, netPnl,
-returnPct: startingEquity > 0 ? Math.round((netPnl / startingEquity) * 1000000) / 10000 : null,
+returnPct: startingEquity > 0 ? (netPnl / startingEquity) * 100 : null,
 sectorAttribution: [],
 // At the day boundary:
 this.portfolioEngine.resetDayStartEquity(endingEquity);

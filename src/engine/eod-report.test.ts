@@ -264,10 +264,14 @@ test('best/worst use only the closing portion of a reversal commission', () => {
   const engine = new MarketSimulationEngine('G6_REVERSAL', 100_000);
   const state = engine.exportState();
   state.portfolio = longToShort.exportState();
+  state.portfolio.tradeHistory.unshift(trade('runner_up', { realizedPnl: 97.5, commission: 0 }));
   state.dayStartTradeCount = 0;
   engine.importState(state);
   engine.skipToNextDay();
-  assert.equal(closingTradeNet(engine.getCurrentEodModal()!.bestTrade!), 98);
+  const report = engine.getCurrentEodModal()!;
+  assert.equal(report.bestTrade?.id, longReverse.id, 'ranked on allocated closing net, not gross realized P&L');
+  assert.equal(closingTradeNet(report.bestTrade!), 98);
+  assert.equal(report.worstTrade?.id, 'runner_up');
 });
 
 test('legacy closing trades without an allocation keep their full commission', () => {
@@ -280,6 +284,7 @@ test('tiny non-zero returns keep a visible sign instead of -0.00%', () => {
   assert.equal(formatSignedPercent(0.0036), '+0.0036%');
   assert.equal(formatSignedPercent(-1.234), '-1.23%');
   assert.equal(formatSignedPercent(0), '0.00%');
+  assert.equal(formatSignedPercent(-0), '-0.00%');
   assert.equal(formatSignedPercent(null), 'N/A');
 });
 
