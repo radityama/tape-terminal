@@ -115,6 +115,7 @@ const tradeRecordSchema = z.object({
   timestamp: z.number(),
   isClosingTrade: z.boolean(),
   realizedPnl: optMoney,
+  closingCommission: optMoney,
   holdingTimeMinutes: z.number().optional(),
   rMultiple: z.number().optional(),
 });
@@ -252,6 +253,8 @@ const marketEngineStateSchema = z.object({
   actionSeq: z.number().int().min(0).default(0),
   // Earnings jumps queued at the end of a day and applied on the next price step.
   activeJumpDeltas: z.array(z.tuple([z.string(), z.number()])).default([]),
+  // Absent on legacy saves; the engine initializes it from the current full history length.
+  dayStartTradeCount: z.number().int().min(0).optional(),
   pricing: pricingEngineStateSchema,
   portfolio: portfolioEngineStateSchema,
   career: careerEngineStateSchema,

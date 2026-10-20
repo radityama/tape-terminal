@@ -3,6 +3,8 @@ import { CareerEngine, CareerEngineState } from './career';
 import { MarketRegime } from './correlation';
 import { EventGenerator, MarketEvent } from './events';
 import { Order, OrderMatchingEngine, OrderSide, OrderType, TimeInForce, TradeRecord, isValidPendingOrder, validOrderValue, validateOrderInput } from './matching';
+import { closingTradeNet } from './trade-pnl';
+import { Money } from '../lib/money';
 import { OrderBookDepth, OrderBookEngine } from './orderbook';
 import { PortfolioEngine, PortfolioEngineState, Position, RiskMetrics } from './portfolio';
 import { Candle, PricingEngine, PricingEngineState } from './pricing';
@@ -26,7 +28,7 @@ export interface EndOfDayReport {
   startingEquity: number;
   endingEquity: number;
   netPnl: number;
-  returnPct: number;
+  returnPct: number | null;
   bestTrade?: TradeRecord;
   worstTrade?: TradeRecord;
   coachNote: string;
@@ -80,6 +82,8 @@ export interface MarketEngineState {
   actionSeq: number;
   // Earnings jumps queued at the end of a day and applied on the next price step.
   activeJumpDeltas: Array<[string, number]>;
+  // Full trade-history length at the start of the simulated day. Legacy saves initialize it on load.
+  dayStartTradeCount?: number;
   pricing: PricingEngineState;
   portfolio: PortfolioEngineState;
   career: CareerEngineState;
@@ -118,6 +122,7 @@ export class MarketSimulationEngine {
   private activeJumpDeltas: Map<string, number> = new Map();
   private eodReports: EndOfDayReport[] = [];
   private currentEodModal: EndOfDayReport | null = null;
+  private dayStartTradeCount = 0;
   private depthCache: Map<string, OrderBookDepth> = new Map();
 
   // Callbacks for subscribers
@@ -168,6 +173,7 @@ export class MarketSimulationEngine {
       rngState: this.rng.getState(),
       actionSeq: this.actionSeq,
       activeJumpDeltas: Array.from(this.activeJumpDeltas.entries()),
+      dayStartTradeCount: this.dayStartTradeCount,
       pricing: this.pricingEngine.exportState(),
       portfolio: this.portfolioEngine.exportState(),
       career: this.careerEngine.exportState(),
@@ -186,6 +192,8 @@ export class MarketSimulationEngine {
     this.session = state.session;
     this.pricingEngine.importState(state.pricing);
     this.portfolioEngine.importState(state.portfolio);
+    const historyLength = this.portfolioEngine.getTradeHistory().length;
+    this.dayStartTradeCount = Math.max(0, Math.min(state.dayStartTradeCount ?? historyLength, historyLength));
     this.careerEngine.importState(state.career);
     this.rivalEngine.importState(state.rivals);
     this.openOrders = new Map(state.openOrders.map((o) => [o.id, { ...o }]));
@@ -744,10 +752,11 @@ export class MarketSimulationEngine {
   // End of trading day sequence
   private concludeTradingDay() {
     const priceMap = this.pricingEngine.getPriceMap();
-    const risk = this.portfolioEngine.calculateRiskMetrics(COMPANY_MAP);
+    const startingEquity = this.portfolioEngine.getDayStartEquity();
 
-    // Apply overnight financing (margin cash interest, short borrow fees)
+    // Apply overnight financing exactly once before settlement values are computed.
     this.portfolioEngine.applyOvernightFinancing(COMPANY_MAP);
+    const risk = this.portfolioEngine.calculateRiskMetrics(COMPANY_MAP);
 
     // Update rival portfolios
     this.rivalEngine.updateDaily(this.companies, priceMap, this.simDay);
@@ -773,15 +782,14 @@ export class MarketSimulationEngine {
 
     // Generate End of Day Coach Report
     const history = this.portfolioEngine.getTradeHistory();
-    const todaysTrades = history.filter(t => Date.now() - t.timestamp < 3600000);
+    const todaysTrades = history.slice(0, Math.max(0, history.length - this.dayStartTradeCount));
+    const closingTrades = todaysTrades.filter((trade) => trade.isClosingTrade && trade.realizedPnl !== undefined);
     let bestTrade: TradeRecord | undefined;
     let worstTrade: TradeRecord | undefined;
 
-    for (const t of todaysTrades) {
-      if (t.realizedPnl !== undefined) {
-        if (!bestTrade || t.realizedPnl > (bestTrade.realizedPnl || -Infinity)) bestTrade = t;
-        if (!worstTrade || t.realizedPnl < (worstTrade.realizedPnl || Infinity)) worstTrade = t;
-      }
+    for (const trade of closingTrades) {
+      if (!bestTrade || closingTradeNet(trade) > closingTradeNet(bestTrade)) bestTrade = trade;
+      if (!worstTrade || closingTradeNet(trade) < closingTradeNet(worstTrade)) worstTrade = trade;
     }
 
     // Coach note evaluation
@@ -792,17 +800,19 @@ export class MarketSimulationEngine {
       coachNote = 'Leverage reached near maximum permitted limits. Keep excess margin cushions for overnight volatility.';
     }
 
+    const endingEquity = risk.netLiquidationValue;
+    const netPnl = Money.from(endingEquity).sub(startingEquity).toNumber();
     const report: EndOfDayReport = {
       day: this.simDay,
       dateStr: `Sim Day ${this.simDay}`,
-      startingEquity: 100000,
-      endingEquity: risk.netLiquidationValue,
-      netPnl: risk.netLiquidationValue - 100000,
-      returnPct: Math.round(((risk.netLiquidationValue - 100000) / 100000) * 1000) / 10,
+      startingEquity,
+      endingEquity,
+      netPnl,
+      returnPct: startingEquity > 0 ? (netPnl / startingEquity) * 100 : null,
       bestTrade,
       worstTrade,
       coachNote,
-      sectorAttribution: risk.sectorExposures.map(s => ({ sector: s.sector, pnl: s.dollarValue * 0.02 })),
+      sectorAttribution: [],
     };
 
     this.eodReports.push(report);
@@ -815,7 +825,8 @@ export class MarketSimulationEngine {
     this.careerEngine.evaluateSectors(this.currentSectors());
     this.simSecondsOfDay = 9.5 * 3600; // 09:30:00
     this.pricingEngine.startNewDay(Math.floor(Date.now() / 1000));
-    this.portfolioEngine.resetDayStartEquity(risk.netLiquidationValue);
+    this.dayStartTradeCount = history.length;
+    this.portfolioEngine.resetDayStartEquity(endingEquity);
   }
 
   dismissEodModal() {

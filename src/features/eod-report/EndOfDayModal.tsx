@@ -2,7 +2,13 @@
 
 import React from 'react';
 import { useTerminalStore } from '../../store/useTerminalStore';
-import { X, CaretUp, CaretDown, ChatCircleDots } from '@phosphor-icons/react';
+import { X, ChatCircleDots } from '@phosphor-icons/react';
+import { Money } from '../../lib/money';
+import { formatSignedPercent } from '../../lib/format-percent';
+import { closingTradeNet } from '../../engine/trade-pnl';
+
+const signClass = (value: number) =>
+  value > 0 ? 'text-[var(--up)]' : value < 0 ? 'text-[var(--down)]' : 'text-[var(--text-1)]';
 
 export function EndOfDayModal() {
   const activeModal = useTerminalStore((s) => s.activeModal);
@@ -14,11 +20,9 @@ export function EndOfDayModal() {
   const report = engine?.getCurrentEodModal();
   if (!report) return null;
 
-  const isProfit = report.netPnl >= 0;
-
   return (
-    <div className="fixed inset-0 bg-[var(--bg-0)]/80 flex items-center justify-center z-50 p-4 font-sans select-none">
-      <div className="bg-[var(--bg-1)] border border-[var(--line-strong)] rounded-[2px] max-w-lg w-full p-4 space-y-4 shadow-float">
+    <div className="fixed inset-0 bg-[var(--bg-0)]/80 flex items-center justify-center z-50 p-4 font-sans select-none overflow-y-auto">
+      <div className="bg-[var(--bg-1)] border border-[var(--line-strong)] rounded-[2px] max-w-lg w-full max-h-[calc(100dvh-2rem)] overflow-y-auto p-4 space-y-4 shadow-float">
         {/* Header */}
         <div className="flex justify-between items-center border-b border-[var(--line)] pb-2">
           <div>
@@ -38,49 +42,66 @@ export function EndOfDayModal() {
         </div>
 
         {/* P&L Attribution Summary */}
-        <div className="bg-[var(--bg-0)] p-3 border border-[var(--line)] rounded-[2px] grid grid-cols-2 gap-2 font-mono text-[11px]">
+        <div className="bg-[var(--bg-0)] p-3 border border-[var(--line)] rounded-[2px] grid grid-cols-1 sm:grid-cols-3 gap-2 font-mono text-[11px]">
+          <div>
+            <span className="text-[9px] uppercase text-[var(--text-3)] block">Opening Equity</span>
+            <span className="text-[15px] font-bold text-[var(--text-1)]">
+              {Money.from(report.startingEquity).format()}
+            </span>
+          </div>
+
           <div>
             <span className="text-[9px] uppercase text-[var(--text-3)] block">Closing Net Equity</span>
             <span className="text-[15px] font-bold text-[var(--text-1)]">
-              ${report.endingEquity.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              {Money.from(report.endingEquity).format()}
             </span>
           </div>
 
           <div>
             <span className="text-[9px] uppercase text-[var(--text-3)] block">Session Net P&L</span>
-            <span className={`text-[15px] font-bold ${isProfit ? 'text-[var(--up)]' : 'text-[var(--down)]'}`}>
-              {isProfit ? `+$${report.netPnl.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : `-$${Math.abs(report.netPnl).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
-              <span className="text-[11px] font-normal pl-1">({isProfit ? '+' : ''}{report.returnPct.toFixed(2)}%)</span>
+            <span className={`text-[15px] font-bold ${signClass(report.netPnl)}`}>
+              {Money.from(report.netPnl).format(true)}
+              <span className="text-[11px] font-normal pl-1">
+                ({formatSignedPercent(report.returnPct)})
+              </span>
             </span>
           </div>
         </div>
 
         {/* Best & Worst Trade */}
-        <div className="grid grid-cols-2 gap-2 font-mono text-[11px]">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 font-mono text-[11px]">
           <div className="bg-[var(--bg-0)] p-2.5 border border-[var(--line)] rounded-[2px]">
-            <span className="text-[9px] uppercase text-[var(--up)] block font-bold">Best Trade</span>
+            <span className="text-[9px] uppercase text-[var(--text-3)] block font-bold">Best Trade</span>
             {report.bestTrade ? (
               <div className="mt-1">
                 <div className="text-[12px] font-bold text-[var(--text-1)]">{report.bestTrade.ticker}</div>
-                <div className="text-[11px] text-[var(--up)] font-semibold">+${report.bestTrade.realizedPnl?.toFixed(2)}</div>
+                <div className={`text-[11px] font-semibold ${signClass(closingTradeNet(report.bestTrade))}`}>
+                  {Money.from(closingTradeNet(report.bestTrade)).format(true)}
+                </div>
               </div>
             ) : (
-              <div className="text-[10px] text-[var(--text-3)] mt-1">No closed gains today</div>
+              <div className="text-[10px] text-[var(--text-3)] mt-1">No closed trades today</div>
             )}
           </div>
 
           <div className="bg-[var(--bg-0)] p-2.5 border border-[var(--line)] rounded-[2px]">
-            <span className="text-[9px] uppercase text-[var(--down)] block font-bold">Worst Trade</span>
+            <span className="text-[9px] uppercase text-[var(--text-3)] block font-bold">Worst Trade</span>
             {report.worstTrade ? (
               <div className="mt-1">
                 <div className="text-[12px] font-bold text-[var(--text-1)]">{report.worstTrade.ticker}</div>
-                <div className="text-[11px] text-[var(--down)] font-semibold">-${Math.abs(report.worstTrade.realizedPnl || 0).toFixed(2)}</div>
+                <div className={`text-[11px] font-semibold ${signClass(closingTradeNet(report.worstTrade))}`}>
+                  {Money.from(closingTradeNet(report.worstTrade)).format(true)}
+                </div>
               </div>
             ) : (
-              <div className="text-[10px] text-[var(--text-3)] mt-1">No closed losses today</div>
+              <div className="text-[10px] text-[var(--text-3)] mt-1">No closed trades today</div>
             )}
           </div>
         </div>
+
+        <p className="font-mono text-[9px] text-[var(--text-3)] leading-relaxed">
+          Trade figures are closing fill P&L after the commission allocated to the closed shares; entry fees are not allocated. Sector P&L unavailable.
+        </p>
 
         {/* Performance Coach Note */}
         <div className="bg-[var(--bg-2)] p-3 border border-[var(--line-strong)] rounded-[2px] flex items-start space-x-2.5">

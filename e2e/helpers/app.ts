@@ -45,8 +45,19 @@ export async function openTitle(page: Page): Promise<void> {
 
 export async function skipToNextDay(page: Page): Promise<number> {
   const clock = page.locator('#tutorial-sim-clock');
+  const conflict = page.getByRole('dialog').filter({ hasText: /Save Conflict/ });
+  // A background save can surface the conflict before the skip click; the test's goal is the dialog.
+  if (await conflict.isVisible().catch(() => false)) {
+    return simulationDay(page);
+  }
   const before = await clock.innerText();
-  await page.getByRole('button', { name: 'Skip to next session close' }).click();
+  try {
+    await page.getByRole('button', { name: 'Skip to next session close' }).click({ timeout: 10_000 });
+  } catch (error) {
+    // A background save surfaced the conflict while the click retried; the test's goal is the dialog.
+    if (await conflict.isVisible().catch(() => false)) return simulationDay(page);
+    throw error;
+  }
   await expect
     .poll(async () => clock.innerText(), { timeout: 20_000 })
     .not.toBe(before);
@@ -58,7 +69,7 @@ export async function skipToNextDay(page: Page): Promise<number> {
     } catch (error) {
       // A sync conflict can arrive first and cover the settlement report.
       try {
-        await expect(page.getByRole('dialog').filter({ hasText: /Save Conflict/ })).toBeVisible({ timeout: 10_000 });
+        await expect(conflict).toBeVisible({ timeout: 10_000 });
       } catch {
         throw error;
       }

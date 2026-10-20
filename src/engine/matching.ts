@@ -88,6 +88,8 @@ export interface TradeRecord {
   timestamp: number;
   isClosingTrade: boolean;
   realizedPnl?: number;
+  /** Commission allocated to the shares closed by this fill. Absent on legacy records. */
+  closingCommission?: number;
   holdingTimeMinutes?: number;
   rMultiple?: number;
 }
